@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- "production" is used for every configuration on purpose: the app is
+	     archived on CI with an App Store distribution profile, which only
+	     grants aps-environment=production. A "development" value here would
+	     make codesign fail. Switch to "development" only if you ever debug
+	     on a physical device with a development profile. -->
+	<key>aps-environment</key>
+	<string>production</string>
+</dict>
+</plist>

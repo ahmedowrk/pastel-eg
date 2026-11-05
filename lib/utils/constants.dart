@@ -1,0 +1,40 @@
+/// Centralized application constants.
+///
+/// Keep every "magic string" / configurable value here so the rest of the
+/// codebase never hardcodes URLs, channel ids, or keys. This is the ONLY
+/// file you should need to edit when pointing the app at a new backend.
+class AppConstants {
+  AppConstants._();
+
+  /// The default Laravel website URL loaded when the app starts and when a
+  /// notification payload does not specify a target URL.
+  static const String defaultWebsiteUrl = 'https://pastel-eg.com';
+
+  /// Android notification channel id. Must match the channel created by
+  /// flutter_local_notifications and referenced by the Laravel backend if it
+  /// ever sends `android.notification.channel_id` explicitly (optional).
+  static const String notificationChannelId = 'high_importance_channel';
+
+  /// Human readable channel name shown in Android system settings.
+  static const String notificationChannelName = 'High Importance Notifications';
+
+  /// Channel description shown in Android system settings.
+  static const String notificationChannelDescription =
+      'This channel is used for important notifications from the app.';
+
+  /// Drawable name for the small notification icon on Android.
+  /// Must exist at: android/app/src/main/res/drawable/ic_notification.png
+  static const String androidNotificationIcon = '@drawable/ic_notification';
+
+  /// Laravel backend endpoint path used to register/update the device FCM token
+  /// within the authenticated Provider WebView session.
+  static const String deviceTokenPath = '/ar/fcm/device-token';
+  static const String deviceTokenEndpoint = '$defaultWebsiteUrl$deviceTokenPath';
+
+  /// Key names used inside the FCM `data` payload. Keeping them centralized
+  /// means the Laravel team and the Flutter team always agree on the schema.
+  static const String payloadKeyUrl = 'url';
+  static const String payloadKeyType = 'type';
+  static const String payloadKeyTitle = 'title';
+  static const String payloadKeyBody = 'body';
+}

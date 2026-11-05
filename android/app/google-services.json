@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "531497971681",
+    "project_id": "pastel-e59a0",
+    "storage_bucket": "pastel-e59a0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:531497971681:android:8888cc9bd1e650b02beca0",
+        "android_client_info": {
+          "package_name": "com.pasteleg.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCQ5QQ9cAqcskztd28g-Xcy1SiA1WQqJHM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
