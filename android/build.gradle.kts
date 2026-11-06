@@ -38,14 +38,14 @@ subprojects {
         afterEvaluate {
             if (plugins.hasPlugin("com.android.library")) {
                 extensions.findByType(com.android.build.gradle.BaseExtension::class.java)?.apply {
-                    compileSdkVersion(35)
+                    compileSdkVersion(36)
                     compileOptions {
                         sourceCompatibility = JavaVersion.VERSION_17
                         targetCompatibility = JavaVersion.VERSION_17
                     }
                 }
                 extensions.findByType(com.android.build.gradle.LibraryExtension::class.java)?.apply {
-                    compileSdk = 35
+                    compileSdk = 36
                 }
             }
         }

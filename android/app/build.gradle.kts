@@ -19,7 +19,7 @@ plugins {
 
 android {
     namespace = "com.pasteleg.app"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
