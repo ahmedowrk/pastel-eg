@@ -196,11 +196,67 @@ class SocialBridgeService {
         return;
       }
 
-      // 2. Extract CSRF token from active WebView
+      // 2. Execute authenticated token exchange inside WebView session (includes HttpOnly session cookies)
+      if (_webViewController != null) {
+        final token = authResult.accessToken!;
+        final permissionsJson = jsonEncode(authResult.grantedPermissions.toList());
+        final syncJs = '''
+(function() {
+  function getCsrf() {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta && meta.getAttribute('content')) return meta.getAttribute('content');
+    var m = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+  var csrf = getCsrf();
+  var payload = JSON.stringify({
+    provider: 'facebook',
+    access_token: ${jsonEncode(token)},
+    granted_permissions: $permissionsJson,
+    device_platform: 'android'
+  });
+
+  var primaryUrl = '/provider/automation-settings/provider/social-connections/meta/connect-token';
+  var fallbackUrl = '/ar/mobile/social/meta/connect-token';
+
+  function sendReq(url, onFail) {
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-CSRF-TOKEN': csrf,
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: payload,
+      credentials: 'include'
+    }).then(function(res) {
+      if (res.ok) {
+        setTimeout(function() { window.location.reload(); }, 300);
+      } else if (onFail) {
+        onFail();
+      } else {
+        res.json().then(function(d) {
+          console.warn('[PastelNative] Server error:', d);
+        }).catch(function() {});
+      }
+    }).catch(function(err) {
+      if (onFail) onFail();
+    });
+  }
+
+  sendReq(primaryUrl, function() {
+    sendReq(fallbackUrl, null);
+  });
+})();
+''';
+        await _webViewController!.runJavaScript(syncJs);
+      }
+
+      // 3. Parallel direct Dart exchange
       final String csrfToken = await _extractCsrfTokenFromWebView();
       final String cookieHeader = await _extractCookiesFromWebView();
 
-      // 3. Securely exchange native token with Laravel backend
       final BackendSocialConnectResult backendResult = await SocialBackendService.instance.connectMetaToken(
         accessToken: authResult.accessToken!,
         grantedPermissions: authResult.grantedPermissions,
