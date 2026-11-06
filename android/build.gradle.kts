@@ -21,21 +21,23 @@ subprojects {
 }
 
 subprojects {
-    afterEvaluate {
-        val javaTarget = tasks.withType<JavaCompile>().findByName("compileReleaseJavaWithJavac")?.targetCompatibility
-            ?: tasks.withType<JavaCompile>().firstOrNull()?.targetCompatibility
-            ?: "11"
-
+    val configureTasks: Project.() -> Unit = {
+        tasks.withType<JavaCompile>().configureEach {
+            sourceCompatibility = "17"
+            targetCompatibility = "17"
+        }
         tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
             compilerOptions {
-                when (javaTarget) {
-                    "1.8", "8" -> jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_1_8)
-                    "11" -> jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
-                    "17" -> jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-                    "21" -> jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
-                    else -> jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
-                }
+                jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
             }
+        }
+    }
+
+    if (state.executed) {
+        configureTasks()
+    } else {
+        afterEvaluate {
+            configureTasks()
         }
     }
 }
