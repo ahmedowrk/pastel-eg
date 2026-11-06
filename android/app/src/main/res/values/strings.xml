@@ -3,5 +3,6 @@
     <string name="app_name">Pastel</string>
     <string name="facebook_app_id">2184428119002213</string>
     <string name="fb_login_protocol_scheme">fb2184428119002213</string>
-    <string name="facebook_client_token">PASTE_META_CLIENT_TOKEN_HERE</string>
+    <!-- Replace with Client Token from Meta Dashboard -> Settings -> Advanced -->
+    <string name="facebook_client_token">c3781a941f92035ee1e7feeb1d48547f</string>
 </resources>

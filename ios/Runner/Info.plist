@@ -2,25 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Meta / Facebook Configuration -->
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>fb2184428119002213</string>
-			</array>
-		</dict>
-	</array>
-	<key>FacebookAppID</key>
-	<string>2184428119002213</string>
-	<key>FacebookClientToken</key>
-	<string>PASTE_META_CLIENT_TOKEN_HERE</string>
-	<key>FacebookDisplayName</key>
-	<string>Pastel</string>
-
-	<key>CADisableMinimumFrameDurationOnPhone</key>
-	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -43,33 +24,33 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>UIApplicationSceneManifest</key>
-	<dict>
-		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
-		<key>UISceneConfigurations</key>
+
+	<!-- URL Schemes for Facebook Login Callback -->
+	<key>CFBundleURLTypes</key>
+	<array>
 		<dict>
-			<key>UIWindowSceneSessionRoleApplication</key>
+			<key>CFBundleURLSchemes</key>
 			<array>
-				<dict>
-					<key>UISceneClassName</key>
-					<string>UIWindowScene</string>
-					<key>UISceneConfigurationName</key>
-					<string>flutter</string>
-					<key>UISceneDelegateClassName</key>
-					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
-					<key>UISceneStoryboardFile</key>
-					<string>Main</string>
-				</dict>
+				<string>fb2184428119002213</string>
 			</array>
 		</dict>
-	</dict>
-	<key>UIApplicationSupportsIndirectInputEvents</key>
-	<true/>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>remote-notification</string>
 	</array>
+
+	<!-- Meta App Credentials -->
+	<key>FacebookAppID</key>
+	<string>2184428119002213</string>
+	<key>FacebookClientToken</key>
+	<string>c3781a941f92035ee1e7feeb1d48547f</string>
+	<key>FacebookDisplayName</key>
+	<string>Pastel</string>
+
+	<!-- Allow Facebook App Queries -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>fbapi</string>
+		<string>fb-messenger-share-api</string>
+	</array>
+
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
@@ -77,42 +58,8 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>UISupportedInterfaceOrientations~ipad</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsArbitraryLoadsInWebContent</key>
-		<true/>
-	</dict>
-	<key>ITSAppUsesNonExemptEncryption</key>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>نحتاج إلى الوصول إلى صورك لاختيار صورة ورفعها داخل التطبيق.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>نحتاج إلى الكاميرا لالتقاط صورة ورفعها داخل التطبيق.</string>
-	<!-- image_picker links UIImagePickerController, which references the
-	     microphone APIs even though the app never records audio. Without this
-	     key App Store Connect rejects the upload with ITMS-90683. -->
-	<key>NSMicrophoneUsageDescription</key>
-	<string>لا يسجّل التطبيق أي صوت. هذا الإذن مطلوب فقط لأن مكوّن اختيار الصور يستخدم الكاميرا.</string>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>fbapi</string>
-		<string>fb-messenger-share-api</string>
-		<string>tel</string>
-		<string>sms</string>
-		<string>mailto</string>
-		<string>whatsapp</string>
-		<string>https</string>
-		<string>http</string>
-	</array>
 </dict>
 </plist>
