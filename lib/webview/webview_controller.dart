@@ -289,11 +289,15 @@ class AppWebViewController with WidgetsBindingObserver {
     final uri = Uri.tryParse(request.url);
     if (uri == null) return NavigationDecision.navigate;
 
-    // Rewrite www.facebook.com OAuth dialog to m.facebook.com so it uses
-    // the mobile Safari flow instead of the desktop CAA Comet modal
-    if (uri.host == 'www.facebook.com' && uri.path.contains('/dialog/oauth')) {
-      final mobileUri = uri.replace(host: 'm.facebook.com');
-      controller.loadRequest(mobileUri);
+    // Intercept Facebook OAuth navigation: NEVER open inside embedded WebView!
+    final bool isFacebookOAuth = (uri.host.contains('facebook.com') &&
+        (uri.path.contains('/dialog/oauth') || uri.path.contains('/login')));
+    final bool isPastelMetaConnect = (uri.host.contains('pastel-eg.com') &&
+        uri.path.contains('/social-connections/meta/connect'));
+
+    if (isFacebookOAuth || isPastelMetaConnect) {
+      // Trigger Native Facebook Login flow directly
+      SocialBridgeService.instance.startDirectFacebookLogin(provider: 'facebook');
       return NavigationDecision.prevent;
     }
 

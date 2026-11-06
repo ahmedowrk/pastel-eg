@@ -77,6 +77,13 @@ class SocialBridgeService {
 ''';
 
   /// Processes messages received from the `PastelNativeChannel` JavaScript Channel.
+    /// Directly starts native Meta login without waiting for a JS message.
+  /// Used when an OAuth navigation attempt is intercepted from the WebView.
+  Future<void> startDirectFacebookLogin({String provider = 'facebook'}) async {
+    final String reqId = 'direct_${DateTime.now().millisecondsSinceEpoch}';
+    await _handleConnectAction(reqId, provider);
+  }
+
   Future<void> handleJavascriptMessage(
     String rawMessage,
     String? currentUrl,
@@ -205,6 +212,11 @@ class SocialBridgeService {
 
       // 4. Dispatch final clean response to WebView without ever returning the access token!
       _dispatchResult(backendResult.toBridgePayload(requestId, provider));
+      if (backendResult.isSuccess && _webViewController != null) {
+        Future.delayed(const Duration(milliseconds: 500), () {
+          _webViewController?.reload();
+        });
+      }
     } catch (e) {
       if (!completer.isCompleted) {
         _dispatchError(requestId, provider, 'backend_error', 'Internal error: ${e.toString()}');
