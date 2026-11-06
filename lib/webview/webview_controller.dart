@@ -11,24 +11,60 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 import '../firebase/notification_service.dart';
 import '../services/device_info_service.dart';
 import '../services/notification_state_service.dart';
+import '../services/social_bridge_service.dart';
 import '../utils/constants.dart';
 
-/// Chrome-like User-Agent string that removes the "wv" (WebView) marker.
-/// Facebook and other OAuth providers detect "wv" in the UA and block or
-/// restrict OAuth flows / force Passkeys which Android WebView cannot handle.
-const String _kChromeUserAgent =
-    'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) '
-    'AppleWebKit/537.36 (KHTML, like Gecko) '
-    'Chrome/131.0.0.0 Mobile Safari/537.36';
-
-/// Builds and configures a [WebViewController] with full WebView capabilities
-/// including an automated, authenticated FCM token registration bridge for
-/// the Provider session on Laravel (`/ar/fcm/device-token`).
+/// iOS Mobile Safari User-Agent (without "Android" or "wv").
 ///
-/// OAuth-aware: overrides the default WebView User-Agent so that Facebook and
-/// similar providers treat the WebView as a first-class browser (not an
-/// embedded "wv" WebView). This avoids Passkey/FIDO2 prompts and the
-/// resulting "Something went wrong" errors.
+/// Fixes:
+/// 1) "Something went wrong — Use your passkey again" on Android WebView when
+///    logging in with Facebook / Instagram.
+/// 2) Preserves `laravel_session` and Facebook `datr` cookies inside the same
+///    WebView so `/meta/connect` -> `m.facebook.com` -> `/meta/callback`
+///    completes and links the Facebook Page / Instagram account cleanly.
+const String _kPasskeyFreeSafariUserAgent =
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) '
+    'AppleWebKit/605.1.15 (KHTML, like Gecko) '
+    'Version/16.6 Mobile/15E148 Safari/604.1';
+
+/// JavaScript shim injected on every page load to disable WebAuthn / Passkey
+/// prompts (`PublicKeyCredential` & `autocomplete="username webauthn"`) so
+/// Facebook and Instagram never trigger the broken Passkey modal in WebView.
+const String _kDisablePasskeyJs = '''
+(function() {
+  try {
+    if (window.PublicKeyCredential) {
+      window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = function() {
+        return Promise.resolve(false);
+      };
+      window.PublicKeyCredential.isConditionalMediationAvailable = function() {
+        return Promise.resolve(false);
+      };
+      delete window.PublicKeyCredential;
+    }
+    if (navigator.credentials) {
+      navigator.credentials.get = function() {
+        return Promise.reject(new DOMException('Passkeys disabled in WebView', 'NotSupportedError'));
+      };
+      navigator.credentials.create = function() {
+        return Promise.reject(new DOMException('Passkeys disabled in WebView', 'NotSupportedError'));
+      };
+    }
+    function stripWebAuthnAutocomplete() {
+      var inputs = document.querySelectorAll('input[autocomplete*="webauthn"]');
+      for (var i = 0; i < inputs.length; i++) {
+        inputs[i].setAttribute('autocomplete', 'username');
+      }
+    }
+    stripWebAuthnAutocomplete();
+    var observer = new MutationObserver(stripWebAuthnAutocomplete);
+    if (document.documentElement) {
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+  } catch (e) {}
+})();
+''';
+
 class AppWebViewController with WidgetsBindingObserver {
   final ValueChanged<int>? onProgressChanged;
   final VoidCallback? onPageStarted;
@@ -36,16 +72,12 @@ class AppWebViewController with WidgetsBindingObserver {
   final void Function(WebResourceError error)? onWebResourceError;
 
   late final WebViewController controller;
+  final WebViewCookieManager _cookieManager = WebViewCookieManager();
 
   final ImagePicker _imagePicker = ImagePicker();
 
-  /// Tracks the last token successfully registered to avoid redundant requests.
   String? _lastRegisteredToken;
   bool _isSyncingToken = false;
-
-  /// Set to `true` when we open an external browser for OAuth so that we
-  /// know to reload the WebView when the user comes back to the app.
-  bool _waitingForExternalAuth = false;
 
   AppWebViewController({
     required String initialUrl,
@@ -57,7 +89,7 @@ class AppWebViewController with WidgetsBindingObserver {
     controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0x00000000))
-      ..setUserAgent(_kChromeUserAgent)
+      ..setUserAgent(_kPasskeyFreeSafariUserAgent)
       ..addJavaScriptChannel(
         'FlutterFCMChannel',
         onMessageReceived: _handleFcmChannelMessage,
@@ -65,16 +97,34 @@ class AppWebViewController with WidgetsBindingObserver {
       ..addJavaScriptChannel(
         'NotificationStateChannel',
         onMessageReceived: (JavaScriptMessage message) {
-          NotificationStateService.instance
-              .handleJavascriptMessage(message.message);
+          NotificationStateService.instance.handleJavascriptMessage(
+            message.message,
+          );
+        },
+      )
+      ..addJavaScriptChannel(
+        'PastelNativeChannel',
+        onMessageReceived: (JavaScriptMessage message) {
+          controller.currentUrl().then((url) {
+            SocialBridgeService.instance.handleJavascriptMessage(
+              message.message,
+              url,
+            );
+          });
         },
       )
       ..setNavigationDelegate(
         NavigationDelegate(
           onProgress: (progress) => onProgressChanged?.call(progress),
-          onPageStarted: (_) => onPageStarted?.call(),
+          onPageStarted: (_) {
+            onPageStarted?.call();
+            controller.runJavaScript(_kDisablePasskeyJs);
+            controller.runJavaScript(SocialBridgeService.kPastelNativeInjectionJs);
+          },
           onPageFinished: (url) {
             onPageFinished?.call();
+            controller.runJavaScript(_kDisablePasskeyJs);
+            controller.runJavaScript(SocialBridgeService.kPastelNativeInjectionJs);
             _attemptFcmTokenSync(url);
             NotificationStateService.instance.syncState();
           },
@@ -84,37 +134,42 @@ class AppWebViewController with WidgetsBindingObserver {
       )
       ..loadRequest(Uri.parse(initialUrl));
 
-    // ── Android-specific WebView settings ──
     final platformController = controller.platform;
     if (platformController is AndroidWebViewController) {
       platformController.setOnShowFileSelector(_onShowFileSelector);
+      AndroidWebViewCookieManager(
+        const PlatformWebViewCookieManagerCreationParams(),
+      ).setAcceptThirdPartyCookies(platformController, true);
     }
 
-    // Listen for FCM token changes (e.g. initial fetch or rotation)
+    SocialBridgeService.instance.attachController(controller);
     NotificationService.instance.tokenNotifier.addListener(_onFcmTokenChanged);
-
     NotificationStateService.instance.attachWebViewController(controller);
-
-    // Observe app lifecycle to reload WebView when returning from external auth.
     WidgetsBinding.instance.addObserver(this);
   }
 
-  // ── Lifecycle observer ──────────────────────────────────────────────────
+  /// Clears ONLY Facebook's active user session cookies (`c_user`, `xs`, `fr`)
+  /// while keeping Pastel's `laravel_session` and Facebook's device `datr`
+  /// cookie intact. This allows logging into a different Facebook account cleanly.
+  Future<void> clearFacebookSessionCookies() async {
+    const fbSessionCookies = ['c_user', 'xs', 'fr'];
+    const fbDomains = ['.facebook.com', 'm.facebook.com', 'www.facebook.com'];
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _waitingForExternalAuth) {
-      _waitingForExternalAuth = false;
-      // Reload so the WebView picks up the session/link state that was
-      // established in the external browser.
-      if (kDebugMode) {
-        debugPrint('[AppWebViewController] Returned from external auth – reloading WebView');
+    for (final domain in fbDomains) {
+      for (final name in fbSessionCookies) {
+        try {
+          await _cookieManager.setCookie(
+            WebViewCookie(
+              name: name,
+              value: '',
+              domain: domain,
+              path: '/',
+            ),
+          );
+        } catch (_) {}
       }
-      controller.reload();
     }
   }
-
-  // ── FCM token sync ──────────────────────────────────────────────────────
 
   void _onFcmTokenChanged() {
     controller.currentUrl().then((url) {
@@ -124,16 +179,10 @@ class AppWebViewController with WidgetsBindingObserver {
     });
   }
 
-  /// Attempts to register the FCM token into the active Laravel Provider session.
-  ///
-  /// Runs inside the WebView DOM context using native `fetch()`, which automatically
-  /// includes the authenticated WebView session cookies (`laravel_session`, etc.) and
-  /// extracts the CSRF token (`meta[name="csrf-token"]` or `XSRF-TOKEN` cookie).
   Future<void> _attemptFcmTokenSync(String currentUrl) async {
     final token = NotificationService.instance.currentToken;
     if (token == null || token.isEmpty) return;
 
-    // Only attempt sync on the main site domain
     final uri = Uri.tryParse(currentUrl);
     if (uri == null || !uri.host.contains('pastel-eg.com')) return;
 
@@ -144,7 +193,8 @@ class AppWebViewController with WidgetsBindingObserver {
       final deviceName = await DeviceInfoService.instance.getDeviceName();
       final platform = Platform.isAndroid ? 'android' : 'ios';
 
-      final jsCode = '''
+      final jsCode =
+          '''
 (function() {
   var fcmToken = ${jsonEncode(token)};
   var platform = ${jsonEncode(platform)};
@@ -189,116 +239,66 @@ class AppWebViewController with WidgetsBindingObserver {
           window.FlutterFCMChannel.postMessage(JSON.stringify({ status: 'success', data: data }));
         }
       });
-    } else {
-      if (window.FlutterFCMChannel) {
-        window.FlutterFCMChannel.postMessage(JSON.stringify({ status: 'unauthorized_or_error', httpCode: res.status }));
-      }
     }
   })
-  .catch(function(err) {
-    if (window.FlutterFCMChannel) {
-      window.FlutterFCMChannel.postMessage(JSON.stringify({ status: 'network_error', error: err.toString() }));
-    }
-  });
+  .catch(function() {});
 })();
 ''';
 
       await controller.runJavaScript(jsCode);
     } catch (e) {
-      if (kDebugMode) debugPrint('[AppWebViewController] FCM JS sync error: $e');
+      if (kDebugMode)
+        debugPrint('[AppWebViewController] FCM JS sync error: $e');
     } finally {
       _isSyncingToken = false;
     }
   }
 
-  // ── File picker ─────────────────────────────────────────────────────────
-
   Future<List<String>> _onShowFileSelector(FileSelectorParams params) async {
     try {
-      final XFile? image =
-          await _imagePicker.pickImage(source: ImageSource.gallery);
+      final XFile? image = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+      );
       if (image == null) return [];
       return [Uri.file(image.path).toString()];
     } catch (e) {
-      if (kDebugMode) {
-        debugPrint('[AppWebViewController] Image picker error: $e');
-      }
       return [];
     }
   }
 
-  // ── FCM channel handler ─────────────────────────────────────────────────
-
   void _handleFcmChannelMessage(JavaScriptMessage message) {
     try {
       final Map<String, dynamic> data = jsonDecode(message.message);
-      final status = data['status'];
-      if (status == 'success') {
+      if (data['status'] == 'success') {
         _lastRegisteredToken = NotificationService.instance.currentToken;
-        if (kDebugMode) {
-          debugPrint(
-              '[AppWebViewController] FCM token registered successfully in Laravel session: ${data['data']}');
-        }
-      } else {
-        if (kDebugMode) {
-          debugPrint(
-              '[AppWebViewController] FCM token registration response: $data');
-        }
       }
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint(
-            '[AppWebViewController] Error parsing JS channel message: $e');
-      }
-    }
+    } catch (_) {}
   }
 
-  // ── Public helpers ──────────────────────────────────────────────────────
-
-  /// Loads a new URL, e.g. when a notification is tapped.
   void loadUrl(String url) {
     controller.loadRequest(Uri.parse(url));
   }
 
   Future<bool> canGoBack() => controller.canGoBack();
-
   Future<void> goBack() => controller.goBack();
-
   Future<void> reload() => controller.reload();
-
-  // ── Navigation policy ───────────────────────────────────────────────────
 
   Future<NavigationDecision> _handleNavigationRequest(
     NavigationRequest request,
   ) async {
     final uri = Uri.tryParse(request.url);
+    if (uri == null) return NavigationDecision.navigate;
 
-    if (uri == null) {
-      return NavigationDecision.navigate;
+    // Rewrite www.facebook.com OAuth dialog to m.facebook.com so it uses
+    // the mobile Safari flow instead of the desktop CAA Comet modal
+    if (uri.host == 'www.facebook.com' && uri.path.contains('/dialog/oauth')) {
+      final mobileUri = uri.replace(host: 'm.facebook.com');
+      controller.loadRequest(mobileUri);
+      return NavigationDecision.prevent;
     }
 
     final isSpecialScheme = !uri.scheme.startsWith('http');
-
-    // Facebook / Meta OAuth URLs must open in Chrome Custom Tabs —
-    // a real Chrome browser that supports Passkeys and all JS APIs.
-    // The WebView (even with Chrome UA) lacks WebAuthn and other APIs
-    // that Facebook's login flow requires.
-    if (_isFacebookUrl(uri)) {
-      if (kDebugMode) {
-        debugPrint('[AppWebViewController] Opening Facebook in Custom Tab: ${request.url}');
-      }
-      _waitingForExternalAuth = true;
-      final launched = await launchUrl(
-        uri,
-        mode: LaunchMode.inAppBrowserView,
-      );
-      if (launched) return NavigationDecision.prevent;
-    }
-
     if (isSpecialScheme) {
-      if (kDebugMode) {
-        debugPrint('[AppWebViewController] Opening externally: ${request.url}');
-      }
       final launched = await launchUrl(
         uri,
         mode: LaunchMode.externalApplication,
@@ -309,23 +309,10 @@ class AppWebViewController with WidgetsBindingObserver {
     return NavigationDecision.navigate;
   }
 
-  /// Whether [uri] belongs to the Facebook / Meta OAuth domain family.
-  bool _isFacebookUrl(Uri uri) {
-    const facebookHosts = {
-      'facebook.com',
-      'www.facebook.com',
-      'm.facebook.com',
-      'web.facebook.com',
-      'z-m.facebook.com',
-    };
-    final host = uri.host.toLowerCase();
-    return facebookHosts.any((fb) => host == fb || host.endsWith('.$fb'));
-  }
-
-  // ── Cleanup ─────────────────────────────────────────────────────────────
-
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    NotificationService.instance.tokenNotifier.removeListener(_onFcmTokenChanged);
+    NotificationService.instance.tokenNotifier.removeListener(
+      _onFcmTokenChanged,
+    );
   }
 }

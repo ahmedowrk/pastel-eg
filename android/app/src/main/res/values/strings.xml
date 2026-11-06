@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Pastel</string>
+    <string name="facebook_app_id">2184428119002213</string>
+    <string name="fb_login_protocol_scheme">fb2184428119002213</string>
+    <string name="facebook_client_token">PASTE_META_CLIENT_TOKEN_HERE</string>
+</resources>

@@ -2,6 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Meta / Facebook Configuration -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>fb2184428119002213</string>
+			</array>
+		</dict>
+	</array>
+	<key>FacebookAppID</key>
+	<string>2184428119002213</string>
+	<key>FacebookClientToken</key>
+	<string>PASTE_META_CLIENT_TOKEN_HERE</string>
+	<key>FacebookDisplayName</key>
+	<string>Pastel</string>
+
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
@@ -88,6 +105,8 @@
 	<string>لا يسجّل التطبيق أي صوت. هذا الإذن مطلوب فقط لأن مكوّن اختيار الصور يستخدم الكاميرا.</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
+		<string>fbapi</string>
+		<string>fb-messenger-share-api</string>
 		<string>tel</string>
 		<string>sms</string>
 		<string>mailto</string>
