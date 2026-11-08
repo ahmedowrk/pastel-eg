@@ -48,22 +48,14 @@ class AppConstants {
   ];
 
   /// TikTok Login Kit v2 Official HTTPS Redirect URI
-  /// Must be registered in TikTok Developer Portal and backed by:
+  /// Registered in TikTok Developer Portal and backed by:
   /// - Android App Links (`/.well-known/assetlinks.json` + `android:autoVerify="true"`)
   /// - iOS Universal Links (`/.well-known/apple-app-site-association` + `applinks:pastel-eg.com`)
   static const String tiktokRedirectUri =
       '$defaultWebsiteUrl/social-connections/tiktok/callback';
 
-  static const String tiktokWebRedirectUri =
-      '$defaultWebsiteUrl/provider/automation-settings/provider/social-connections/tiktok/callback';
-
-  /// TikTok backend connection endpoints on Laravel
+  /// Canonical Laravel endpoint for exchanging TikTok authorization code + PKCE verifier
+  /// Matches the existing `/ar/mobile/social/meta/connect-token` convention.
   static const String tiktokConnectTokenPath =
-      '/provider/mobile/social/connect-token';
-  static const String tiktokFallbackConnectTokenPath =
-      '/provider/social/connect-token';
-  static const String tiktokLegacyConnectTokenPath =
-      '/provider/automation-settings/provider/social-connections/tiktok/connect-token';
-  static const String tiktokMobileConnectTokenPath =
       '/ar/mobile/social/tiktok/connect-token';
 }

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../utils/constants.dart';
@@ -295,7 +294,11 @@ class SocialBridgeService {
     }
   }
 
-  /// Handles `connect_social_account` for `tiktok` via official native TikTok OpenSDK + PKCE
+  /// Handles `connect_social_account` for `tiktok` via official native TikTok OpenSDK + PKCE.
+  ///
+  /// Uses a single canonical POST request (`POST /ar/mobile/social/tiktok/connect-token`)
+  /// with native WebView session cookies (`CookieManager` / `WKHTTPCookieStore`) so the
+  /// single-use OAuth `code` and `code_verifier` are never exposed to WebView JS or sent twice.
   Future<void> _handleTikTokConnectAction(String requestId) async {
     _activeRequestId = requestId;
     final Completer<void> completer = Completer<void>();
@@ -344,71 +347,17 @@ class SocialBridgeService {
       final String codeVerifier = authResult.codeVerifier!;
       final String redirectUri = authResult.redirectUri ?? AppConstants.tiktokRedirectUri;
       final String state = authResult.state ?? '';
-      final List<String> scopesList = authResult.grantedScopes.toList();
-      final String platform = Platform.isIOS ? 'ios' : 'android';
 
-      // 2. Execute authenticated PKCE code exchange inside WebView session (includes HttpOnly wedding-planner-session cookie)
-      if (_webViewController != null) {
-        final String syncJs = '''
-(function() {
-  function getCsrf() {
-    var meta = document.querySelector('meta[name="csrf-token"]');
-    if (meta && meta.getAttribute('content')) return meta.getAttribute('content');
-    var m = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
-    return m ? decodeURIComponent(m[1]) : '';
-  }
-  var csrf = getCsrf();
-  var payload = JSON.stringify({
-    provider: 'tiktok',
-    code: ${jsonEncode(code)},
-    code_verifier: ${jsonEncode(codeVerifier)},
-    state: ${jsonEncode(state)},
-    redirect_uri: ${jsonEncode(redirectUri)},
-    granted_scopes: ${jsonEncode(scopesList)},
-    device_platform: ${jsonEncode(platform)}
-  });
-  var urls = [
-    ${jsonEncode(AppConstants.tiktokConnectTokenPath)},
-    ${jsonEncode(AppConstants.tiktokFallbackConnectTokenPath)},
-    ${jsonEncode(AppConstants.tiktokLegacyConnectTokenPath)},
-    ${jsonEncode(AppConstants.tiktokMobileConnectTokenPath)}
-  ];
-  function tryNext(idx) {
-    if (idx >= urls.length) return;
-    fetch(urls[idx], {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'X-CSRF-TOKEN': csrf,
-        'X-Requested-With': 'XMLHttpRequest'
-      },
-      body: payload,
-      credentials: 'include'
-    }).then(function(res) {
-      if (res.ok) {
-        setTimeout(function() { window.location.reload(); }, 300);
-      } else if (res.status === 404 || res.status === 405) {
-        tryNext(idx + 1);
-      } else {
-        res.json().then(function(d) {
-          console.warn('[PastelNative] TikTok server error:', d);
-        }).catch(function() {});
-      }
-    }).catch(function() {
-      tryNext(idx + 1);
-    });
-  }
-  tryNext(0);
-})();
-''';
-        await _webViewController!.runJavaScript(syncJs);
-      }
-
-      // 3. Parallel direct Dart exchange
+      // 2. Obtain CSRF token and full authenticated session cookies (including HttpOnly cookies)
       final String csrfToken = await _extractCsrfTokenFromWebView();
-      final String cookieHeader = await _extractCookiesFromWebView();
+      String cookieHeader = await TikTokAuthService.instance.getCookiesForUrl(
+        AppConstants.defaultWebsiteUrl,
+      );
+      if (cookieHeader.isEmpty) {
+        cookieHeader = await _extractCookiesFromWebView();
+      }
 
+      // 3. Single canonical server-to-server PKCE exchange via Laravel
       final TikTokBackendConnectResult backendResult =
           await TikTokBackendService.instance.connectTikTokCode(
         code: code,
@@ -422,7 +371,7 @@ class SocialBridgeService {
 
       if (completer.isCompleted) return;
 
-      // 4. Dispatch clean result to WebView without exposing any tokens or secrets
+      // 4. Dispatch sanitized result to WebView without exposing any tokens, codes, or verifiers
       _dispatchResult(backendResult.toBridgePayload(requestId));
 
       if (backendResult.isSuccess && _webViewController != null) {
@@ -432,7 +381,7 @@ class SocialBridgeService {
       }
     } catch (e) {
       if (!completer.isCompleted) {
-        _dispatchError(requestId, 'tiktok', 'backend_error', 'Internal error: ${e.toString()}');
+        _dispatchError(requestId, 'tiktok', 'backend_error', 'حدث خطأ داخلي أثناء ربط حساب تيك توك.');
       }
     } finally {
       timeoutTimer.cancel();
@@ -476,10 +425,12 @@ class SocialBridgeService {
   void _dispatchResult(Map<String, dynamic> payload) {
     if (_webViewController == null) return;
 
-    // SECURITY CHECK: Verify that NO access token or secret is in payload
+    // SECURITY CHECK: Verify that NO access token, authorization code, or PKCE verifier is in payload
     final sanitized = Map<String, dynamic>.from(payload);
     sanitized.remove('access_token');
     sanitized.remove('accessToken');
+    sanitized.remove('refresh_token');
+    sanitized.remove('refreshToken');
     sanitized.remove('token');
     sanitized.remove('secret');
     sanitized.remove('code');

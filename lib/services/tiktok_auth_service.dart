@@ -41,7 +41,9 @@ class TikTokAuthResult {
       code != null &&
       code!.isNotEmpty &&
       codeVerifier != null &&
-      codeVerifier!.isNotEmpty;
+      codeVerifier!.isNotEmpty &&
+      redirectUri != null &&
+      redirectUri!.isNotEmpty;
 }
 
 /// Service bridging Flutter to the official native TikTok OpenSDK v2:
@@ -81,11 +83,23 @@ class TikTokAuthService {
     try {
       final bool? installed = await _channel.invokeMethod<bool>('isTikTokInstalled');
       return installed ?? false;
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('[TikTokAuthService] isTikTokAppInstalled error: $e');
-      }
+    } catch (_) {
       return false;
+    }
+  }
+
+  /// Retrieves the complete cookie header (including HttpOnly session cookies)
+  /// for the given [url] from the native platform cookie store (`CookieManager` on Android,
+  /// `WKHTTPCookieStore` on iOS).
+  Future<String> getCookiesForUrl(String url) async {
+    try {
+      final String? cookies = await _channel.invokeMethod<String>(
+        'getCookiesForUrl',
+        {'url': url},
+      );
+      return cookies?.trim() ?? '';
+    } catch (_) {
+      return '';
     }
   }
 
@@ -135,12 +149,6 @@ class TikTokAuthService {
     });
 
     try {
-      if (kDebugMode) {
-        debugPrint(
-          '[TikTokAuthService] Invoking Native TikTok OpenSDK (preferNative: $preferNative, redirectUri: $rUri)',
-        );
-      }
-
       final dynamic rawResponse = await _channel.invokeMethod<dynamic>('authorize', {
         'clientKey': key,
         'scope': scopesString,
@@ -168,9 +176,9 @@ class TikTokAuthService {
     } catch (e) {
       if (!completer.isCompleted) {
         _cleanup();
-        completer.complete(TikTokAuthResult(
+        completer.complete(const TikTokAuthResult(
           status: TikTokAuthStatus.failed,
-          errorMessage: 'حدث خطأ أثناء تشغيل تيك توك: $e',
+          errorMessage: 'حدث خطأ أثناء تشغيل مصادقة تيك توك.',
         ));
       }
     }
@@ -206,8 +214,8 @@ class TikTokAuthService {
 
     if (statusStr == 'success') {
       // Anti-CSRF state check (defense-in-depth on top of native verification)
-      if (_pendingState != null &&
-          _pendingState!.isNotEmpty &&
+      if (_pendingState == null ||
+          _pendingState!.isEmpty ||
           responseState != _pendingState) {
         return TikTokAuthResult(
           status: TikTokAuthStatus.failed,
@@ -224,19 +232,20 @@ class TikTokAuthService {
         );
       }
 
-      final Set<String> grantedScopes = (grantedStr != null && grantedStr.isNotEmpty)
+      // Only include scopes explicitly reported as granted by the native SDK (never fabricate scopes)
+      final Set<String> grantedScopes = (grantedStr != null && grantedStr.trim().isNotEmpty)
           ? grantedStr
               .split(',')
               .map((s) => s.trim())
               .where((s) => s.isNotEmpty)
               .toSet()
-          : AppConstants.tiktokDefaultScopes.toSet();
+          : const <String>{};
 
       return TikTokAuthResult(
         status: TikTokAuthStatus.success,
         code: code,
         codeVerifier: codeVerifier,
-        state: responseState ?? _pendingState,
+        state: responseState,
         redirectUri: redirectUri,
         grantedScopes: grantedScopes,
         usedNativeApp: usedNativeApp,
@@ -265,7 +274,8 @@ class TikTokAuthService {
     );
   }
 
-  /// Defensive fallback if the WebView ever intercepts the HTTPS callback URI directly.
+  /// Defensive fallback if the WebView ever intercepts the HTTPS callback URI directly
+  /// (e.g., if Android App Link assetlinks.json is not yet deployed on pastel-eg.com).
   bool handleCallbackUri(Uri uri) {
     if (_pendingCompleter == null || _pendingCompleter!.isCompleted) {
       return false;

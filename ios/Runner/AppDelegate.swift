@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import WebKit
 import TikTokOpenSDKCore
 import TikTokOpenAuthSDK
 
@@ -13,35 +14,59 @@ import TikTokOpenAuthSDK
   private var currentTikTokAuthRequest: TikTokAuthRequest?
   private var pendingFlutterResult: FlutterResult?
   private var pendingState: String?
+  private var hasLeftAppForNativeAuth: Bool = false
+  private var registeredChannel: FlutterMethodChannel?
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
+    let launched = super.application(application, didFinishLaunchingWithOptions: launchOptions)
+    registerTikTokChannelIfNeeded(with: window?.rootViewController as? FlutterViewController)
+    return launched
+  }
 
-    if let controller = window?.rootViewController as? FlutterViewController {
-      let channel = FlutterMethodChannel(
-        name: AppDelegate.channelName,
-        binaryMessenger: controller.binaryMessenger
-      )
-      channel.setMethodCallHandler { [weak self] (call, result) in
-        guard let self = self else { return }
-        switch call.method {
-        case "isTikTokInstalled":
-          result(self.checkTikTokInstalled())
-        case "authorize":
-          self.handleAuthorize(call: call, result: result)
-        case "cancel":
-          self.clearPendingSession()
-          result(true)
-        default:
-          result(FlutterMethodNotImplemented)
-        }
+  func registerTikTokChannelIfNeeded(with controller: FlutterViewController?) {
+    guard registeredChannel == nil, let flutterController = controller else { return }
+    let channel = FlutterMethodChannel(
+      name: AppDelegate.channelName,
+      binaryMessenger: flutterController.binaryMessenger
+    )
+    channel.setMethodCallHandler { [weak self] (call, result) in
+      guard let self = self else { return }
+      switch call.method {
+      case "isTikTokInstalled":
+        result(self.checkTikTokInstalled())
+      case "getCookiesForUrl":
+        let args = call.arguments as? [String: Any]
+        let urlStr = (args?["url"] as? String) ?? "https://pastel-eg.com"
+        self.getCookiesForUrl(urlStr: urlStr, result: result)
+      case "authorize":
+        self.handleAuthorize(call: call, result: result)
+      case "cancel":
+        self.clearPendingSession()
+        result(true)
+      default:
+        result(FlutterMethodNotImplemented)
       }
     }
+    registeredChannel = channel
+  }
 
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  private func getCookiesForUrl(urlStr: String, result: @escaping FlutterResult) {
+    guard let host = URL(string: urlStr)?.host?.lowercased() else {
+      result("")
+      return
+    }
+    WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+      let matching = cookies.filter { cookie in
+        let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return host == domain || host.hasSuffix("." + domain)
+      }
+      let header = matching.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+      result(header)
+    }
   }
 
   private func checkTikTokInstalled() -> Bool {
@@ -52,6 +77,33 @@ import TikTokOpenAuthSDK
       }
     }
     return false
+  }
+
+  override func applicationWillResignActive(_ application: UIApplication) {
+    super.applicationWillResignActive(application)
+    if pendingFlutterResult != nil && !(currentTikTokAuthRequest?.isWebAuth ?? true) {
+      hasLeftAppForNativeAuth = true
+    }
+  }
+
+  override func applicationDidBecomeActive(_ application: UIApplication) {
+    super.applicationDidBecomeActive(application)
+    if hasLeftAppForNativeAuth && pendingFlutterResult != nil {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak self] in
+        guard let self = self else { return }
+        if self.hasLeftAppForNativeAuth, let activeResult = self.pendingFlutterResult {
+          let isNativeInstalled = self.checkTikTokInstalled()
+          self.clearPendingSession()
+          activeResult([
+            "status": "cancelled",
+            "errorCode": TikTokAuthResponseErrorCode.cancelled.rawValue,
+            "authError": "user_cancelled",
+            "errorMessage": "تم إلغاء عملية تسجيل الدخول عبر تيك توك.",
+            "usedNativeApp": isNativeInstalled
+          ])
+        }
+      }
+    }
   }
 
   private func handleAuthorize(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -82,19 +134,20 @@ import TikTokOpenAuthSDK
     let isNativeInstalled = checkTikTokInstalled()
 
     // Official TikTokOpenAuthSDK request initialization
-    // Note: TikTokAuthRequest automatically initializes authRequest.pkce (TTKSDKCodeVerifier)
+    // TikTokAuthRequest automatically initializes authRequest.pkce (TTKSDKCodeVerifier)
     // with a 43-char cryptographic codeVerifier and hex-encoded SHA-256 codeChallenge.
     let authRequest = TikTokAuthRequest(scopes: scopes, redirectURI: redirectUri)
     authRequest.state = state
-    authRequest.isWebAuth = !preferNative
+    authRequest.isWebAuth = !preferNative || !isNativeInstalled
 
     self.currentTikTokAuthRequest = authRequest
     self.pendingFlutterResult = result
     self.pendingState = state
+    self.hasLeftAppForNativeAuth = false
 
     let codeVerifier = authRequest.pkce.codeVerifier
 
-    authRequest.send { [weak self] baseResponse in
+    let sent = authRequest.send { [weak self] baseResponse in
       guard let self = self else { return }
       guard let activeResult = self.pendingFlutterResult else { return }
       let expectedState = self.pendingState
@@ -110,6 +163,7 @@ import TikTokOpenAuthSDK
       }
 
       if authResponse.errorCode == .noError, let authCode = authResponse.authCode, !authCode.isEmpty {
+        // Strict anti-CSRF state check
         if let expected = expectedState, !expected.isEmpty, authResponse.state != expected {
           activeResult([
             "status": "failed",
@@ -151,12 +205,23 @@ import TikTokOpenAuthSDK
         ])
       }
     }
+
+    if !sent {
+      let activeResult = self.pendingFlutterResult
+      self.clearPendingSession()
+      activeResult?([
+        "status": "unsupported",
+        "errorMessage": "تعذر تشغيل مصادقة تيك توك (TikTokOpenAuthSDK).",
+        "usedNativeApp": isNativeInstalled && preferNative
+      ])
+    }
   }
 
   private func clearPendingSession() {
     self.currentTikTokAuthRequest = nil
     self.pendingFlutterResult = nil
     self.pendingState = nil
+    self.hasLeftAppForNativeAuth = false
   }
 
   override func application(
