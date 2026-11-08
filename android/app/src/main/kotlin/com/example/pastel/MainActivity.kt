@@ -1,6 +1,5 @@
 package com.pasteleg.app
 
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -26,10 +25,8 @@ class MainActivity : FlutterActivity() {
         private const val KEY_STATE = "pending_state"
         private const val KEY_REDIRECT_URI = "pending_redirect_uri"
         private const val KEY_TIMESTAMP = "pending_timestamp_ms"
-        // Maximum validity window for a restored low-memory pending session (5 minutes)
-        private const val MAX_PENDING_AGE_MS = 5 * 60 * 1000L
-        // Request code used by TikTok OpenSDK AuthApi.authorizeNative -> startActivityForResult(intent, 0)
-        private const val TIKTOK_NATIVE_REQUEST_CODE = 0
+        // Maximum validity window for an active/restored authorization session (2 minutes, matching Dart kAuthTimeout)
+        private const val MAX_PENDING_AGE_MS = 2 * 60 * 1000L
     }
 
     private lateinit var authApi: AuthApi
@@ -40,6 +37,7 @@ class MainActivity : FlutterActivity() {
     private var pendingCodeVerifier: String? = null
     private var pendingState: String? = null
     private var pendingRedirectUri: String = DEFAULT_REDIRECT_URI
+    private var pendingTimestampMs: Long = 0L
     private var pendingPostCreationPayload: Map<String, Any?>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,13 +85,29 @@ class MainActivity : FlutterActivity() {
         pendingCodeVerifier?.let { outState.putString(KEY_VERIFIER, it) }
         pendingState?.let { outState.putString(KEY_STATE, it) }
         outState.putString(KEY_REDIRECT_URI, pendingRedirectUri)
+        if (pendingTimestampMs > 0L) {
+            outState.putLong(KEY_TIMESTAMP, pendingTimestampMs)
+        }
+    }
+
+    private fun isPendingSessionExpired(): Boolean {
+        if (pendingTimestampMs <= 0L) return true
+        return (System.currentTimeMillis() - pendingTimestampMs) > MAX_PENDING_AGE_MS
     }
 
     private fun handleAuthorize(call: MethodCall, result: MethodChannel.Result) {
-        // If a previous authorization attempt was abandoned (e.g. user closed Custom Tab via Back button),
-        // cleanly complete the stale pendingResult as cancelled and wipe its stored PKCE state
-        // before starting the new authorization request.
+        // Active-request protection:
+        // Never cancel or overwrite an active, non-expired authorization session.
+        // Only recover if a prior session genuinely exceeded MAX_PENDING_AGE_MS (2 minutes).
         if (pendingResult != null || pendingCodeVerifier != null) {
+            if (!isPendingSessionExpired()) {
+                result.error(
+                    "DUPLICATE_REQUEST",
+                    "A TikTok authorization request is already in progress.",
+                    null
+                )
+                return
+            }
             cancelActivePendingSession()
         }
 
@@ -118,12 +132,14 @@ class MainActivity : FlutterActivity() {
         // AuthRequest.toBundle() and WebAuthHelper internally call PKCEUtils.generateCodeChallenge(codeVerifier)
         // which produces the official TikTok OpenSDK hex-encoded SHA-256 digest.
         val codeVerifier = PKCEUtils.generateCodeVerifier()
+        val now = System.currentTimeMillis()
 
         pendingResult = result
         pendingCodeVerifier = codeVerifier
         pendingState = state
         pendingRedirectUri = redirectUri
-        persistPendingSession(codeVerifier, state, redirectUri)
+        pendingTimestampMs = now
+        persistPendingSession(codeVerifier, state, redirectUri, now)
 
         val authRequest = AuthRequest(
             clientKey = clientKey,
@@ -166,26 +182,6 @@ class MainActivity : FlutterActivity() {
         handleTikTokAuthIntent(intent)
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (pendingCodeVerifier == null && pendingResult == null) return
-
-        // If AwemeAuthorizedActivity returned an Intent with AuthResponse extras via setResult
-        if (data != null && handleTikTokAuthIntent(data)) {
-            return
-        }
-
-        // If native TikTok AwemeAuthorizedActivity (started with requestCode = 0) was backed out of
-        // with RESULT_CANCELED and no redirect Intent data, complete pending session as cancelled.
-        if (requestCode == TIKTOK_NATIVE_REQUEST_CODE &&
-            resultCode == Activity.RESULT_CANCELED &&
-            data == null &&
-            TikTokAppCheckUtil.isTikTokAppInstalled(this)
-        ) {
-            cancelActivePendingSession()
-        }
-    }
-
     private fun handleTikTokAuthIntent(currentIntent: Intent?): Boolean {
         if (currentIntent == null) return false
         if (!::authApi.isInitialized) {
@@ -194,6 +190,10 @@ class MainActivity : FlutterActivity() {
 
         val response: AuthResponse = authApi.getAuthResponseFromIntent(currentIntent, pendingRedirectUri)
             ?: return false
+
+        // Consume and sanitize the callback Intent immediately so activity recreation
+        // or duplicate intent delivery can never process the same response twice.
+        sanitizeConsumedAuthIntent(currentIntent)
 
         // Ignore duplicate/stale Intent redeliveries if there is no active pending session
         if (pendingResult == null && pendingCodeVerifier == null && pendingState == null) {
@@ -273,6 +273,19 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun sanitizeConsumedAuthIntent(consumedIntent: Intent) {
+        consumedIntent.removeExtra("_bytedance_params_type")
+        consumedIntent.removeExtra("_bytedance_params_error_code")
+        consumedIntent.removeExtra("_bytedance_params_error_msg")
+        consumedIntent.removeExtra("_bytedance_params_auth_code")
+        consumedIntent.removeExtra("_bytedance_params_state")
+        consumedIntent.removeExtra("_bytedance_params_granted_permission")
+        consumedIntent.removeExtra("_bytedance_params_auth_error")
+        consumedIntent.removeExtra("_bytedance_params_auth_error_description")
+        consumedIntent.data = null
+        setIntent(Intent(Intent.ACTION_MAIN))
+    }
+
     private fun cancelActivePendingSession() {
         val activeRes = pendingResult
         val usedNativeApp = TikTokAppCheckUtil.isTikTokAppInstalled(this)
@@ -300,18 +313,19 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun persistPendingSession(verifier: String, state: String, redirectUri: String) {
+    private fun persistPendingSession(verifier: String, state: String, redirectUri: String, timestampMs: Long) {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putString(KEY_VERIFIER, verifier)
             .putString(KEY_STATE, state)
             .putString(KEY_REDIRECT_URI, redirectUri)
-            .putLong(KEY_TIMESTAMP, System.currentTimeMillis())
+            .putLong(KEY_TIMESTAMP, timestampMs)
             .apply()
     }
 
     private fun restorePendingSession(savedInstanceState: Bundle?) {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val savedTimestamp = prefs.getLong(KEY_TIMESTAMP, 0L)
+        val savedTimestamp = savedInstanceState?.getLong(KEY_TIMESTAMP, 0L)?.takeIf { it > 0L }
+            ?: prefs.getLong(KEY_TIMESTAMP, 0L)
         val isExpired = savedTimestamp <= 0L || (System.currentTimeMillis() - savedTimestamp) > MAX_PENDING_AGE_MS
 
         if (isExpired && savedInstanceState == null) {
@@ -326,12 +340,14 @@ class MainActivity : FlutterActivity() {
         pendingRedirectUri = savedInstanceState?.getString(KEY_REDIRECT_URI)
             ?: prefs.getString(KEY_REDIRECT_URI, DEFAULT_REDIRECT_URI)
             ?: DEFAULT_REDIRECT_URI
+        pendingTimestampMs = savedTimestamp
     }
 
     private fun clearPendingSession() {
         pendingResult = null
         pendingCodeVerifier = null
         pendingState = null
+        pendingTimestampMs = 0L
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply()
     }
 }

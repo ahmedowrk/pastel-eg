@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -86,6 +87,50 @@ void main() {
       final TikTokAuthResult result = await TikTokAuthService.instance.authorize();
       expect(result.isSuccess, isTrue);
       expect(result.grantedScopes, isEmpty);
+    });
+
+    test('duplicate authorize call never cancels or supersedes an active authorization request', () async {
+      final Completer<Map<String, dynamic>> nativeCompleter = Completer<Map<String, dynamic>>();
+      String? capturedFirstState;
+      int nativeAuthorizeCalls = 0;
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall call) async {
+        if (call.method == 'authorize') {
+          nativeAuthorizeCalls++;
+          final Map<dynamic, dynamic> args = call.arguments as Map<dynamic, dynamic>;
+          capturedFirstState = args['state'] as String?;
+          return nativeCompleter.future;
+        }
+        return null;
+      });
+
+      // Start first legitimate authorization request
+      final Future<TikTokAuthResult> firstFuture = TikTokAuthService.instance.authorize();
+
+      // Simulate user spending >1.5s inside TikTok while a duplicate request arrives
+      await Future<void>.delayed(const Duration(milliseconds: 1600));
+      final TikTokAuthResult duplicateResult = await TikTokAuthService.instance.authorize();
+
+      // Duplicate request must be rejected without invoking native authorize again or cancelling firstFuture
+      expect(duplicateResult.isSuccess, isFalse);
+      expect(duplicateResult.status, equals(TikTokAuthStatus.failed));
+      expect(nativeAuthorizeCalls, equals(1));
+
+      // Complete the original native authorization request and verify it succeeds intact
+      nativeCompleter.complete(<String, dynamic>{
+        'status': 'success',
+        'code': 'clt.first_session_code',
+        'codeVerifier': 'aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY',
+        'state': capturedFirstState,
+        'redirectUri': 'https://pastel-eg.com/social-connections/tiktok/callback',
+        'grantedPermissions': 'user.info.basic',
+        'usedNativeApp': true,
+      });
+
+      final TikTokAuthResult firstResult = await firstFuture;
+      expect(firstResult.isSuccess, isTrue);
+      expect(firstResult.code, equals('clt.first_session_code'));
     });
   });
 

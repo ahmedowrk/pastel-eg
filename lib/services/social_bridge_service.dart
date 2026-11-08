@@ -17,6 +17,7 @@ class SocialBridgeService {
   WebViewController? _webViewController;
   String? _activeRequestId;
   Completer<void>? _currentAuthCompleter;
+  DateTime? _activeRequestStartedAt;
 
   void attachController(WebViewController controller) {
     _webViewController = controller;
@@ -55,7 +56,7 @@ class SocialBridgeService {
         window.PastelNativeChannel.postMessage(JSON.stringify({
           version: 1,
           action: 'cancel_authorization',
-          requestId: reqId
+          requestId: requestId
         }));
       }
     },
@@ -149,6 +150,16 @@ class SocialBridgeService {
     }
   }
 
+  bool _isCurrentBridgeSessionExpired() {
+    if (_currentAuthCompleter == null || _currentAuthCompleter!.isCompleted) {
+      return false;
+    }
+    if (_activeRequestStartedAt == null) {
+      return true;
+    }
+    return DateTime.now().difference(_activeRequestStartedAt!) >= TikTokAuthService.kAuthTimeout;
+  }
+
   /// Handles `connect_social_account` for facebook/instagram/tiktok
   Future<void> _handleConnectAction(String requestId, String provider) async {
     if (provider != 'facebook' && provider != 'instagram' && provider != 'tiktok') {
@@ -156,29 +167,29 @@ class SocialBridgeService {
       return;
     }
 
-    if (provider == 'tiktok') {
-      if (_currentAuthCompleter != null && !_currentAuthCompleter!.isCompleted) {
-        if (TikTokAuthService.instance.isRapidDuplicateTap) {
-          _dispatchError(requestId, provider, 'duplicate_request', 'An authorization request is already in progress.');
-          return;
-        }
-        // User returned to the app after abandoning a previous external session and tapped Connect again
+    // Duplicate request protection: preserve active authorization requests until they complete
+    // or genuinely exceed the 2-minute session timeout.
+    if (_currentAuthCompleter != null && !_currentAuthCompleter!.isCompleted) {
+      if (_isCurrentBridgeSessionExpired()) {
         TikTokAuthService.instance.cancel();
-        _currentAuthCompleter!.complete();
+        final Completer<void> stale = _currentAuthCompleter!;
         _currentAuthCompleter = null;
         _activeRequestId = null;
+        _activeRequestStartedAt = null;
+        if (!stale.isCompleted) stale.complete();
+      } else {
+        _dispatchError(requestId, provider, 'duplicate_request', 'An authorization request is already in progress.');
+        return;
       }
+    }
+
+    if (provider == 'tiktok') {
       await _handleTikTokConnectAction(requestId);
       return;
     }
 
-    // Duplicate request prevention for facebook/instagram
-    if (_currentAuthCompleter != null && !_currentAuthCompleter!.isCompleted) {
-      _dispatchError(requestId, provider, 'duplicate_request', 'An authorization request is already in progress.');
-      return;
-    }
-
     _activeRequestId = requestId;
+    _activeRequestStartedAt = DateTime.now();
     final Completer<void> completer = Completer<void>();
     _currentAuthCompleter = completer;
 
@@ -257,8 +268,7 @@ class SocialBridgeService {
         onFail();
       } else {
         res.json().then(function(d) {
-          console.warn('[PastelNative] Server error:', d);
-        }).catch(function() {});
+          console.warn('[PastelNative] Server error:', d);        }).catch(function() {});
       }
     }).catch(function(err) {
       if (onFail) onFail();
@@ -300,8 +310,11 @@ class SocialBridgeService {
     } finally {
       timeoutTimer.cancel();
       if (!completer.isCompleted) completer.complete();
-      _activeRequestId = null;
-      _currentAuthCompleter = null;
+      if (_currentAuthCompleter == completer) {
+        _activeRequestId = null;
+        _currentAuthCompleter = null;
+        _activeRequestStartedAt = null;
+      }
     }
   }
 
@@ -312,10 +325,11 @@ class SocialBridgeService {
   /// single-use OAuth `code` and `code_verifier` are never exposed to WebView JS or sent twice.
   Future<void> _handleTikTokConnectAction(String requestId) async {
     _activeRequestId = requestId;
+    _activeRequestStartedAt = DateTime.now();
     final Completer<void> completer = Completer<void>();
     _currentAuthCompleter = completer;
 
-    final Timer timeoutTimer = Timer(const Duration(minutes: 2), () {
+    final Timer timeoutTimer = Timer(TikTokAuthService.kAuthTimeout, () {
       if (!completer.isCompleted) {
         completer.complete();
         TikTokAuthService.instance.cancel();
@@ -402,8 +416,11 @@ class SocialBridgeService {
     } finally {
       timeoutTimer.cancel();
       if (!completer.isCompleted) completer.complete();
-      _activeRequestId = null;
-      _currentAuthCompleter = null;
+      if (_currentAuthCompleter == completer) {
+        _activeRequestId = null;
+        _currentAuthCompleter = null;
+        _activeRequestStartedAt = null;
+      }
     }
   }
 
@@ -413,9 +430,11 @@ class SocialBridgeService {
       TikTokAuthService.instance.cancel();
     }
     if (_activeRequestId == requestId && _currentAuthCompleter != null && !_currentAuthCompleter!.isCompleted) {
-      _currentAuthCompleter!.complete();
+      final Completer<void> active = _currentAuthCompleter!;
       _activeRequestId = null;
       _currentAuthCompleter = null;
+      _activeRequestStartedAt = null;
+      active.complete();
       _dispatchResult({
         'version': 1,
         'requestId': requestId,

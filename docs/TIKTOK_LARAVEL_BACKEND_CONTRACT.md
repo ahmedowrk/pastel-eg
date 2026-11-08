@@ -11,27 +11,43 @@
 1. **Single Canonical Endpoint**:
    `POST /ar/mobile/social/tiktok/connect-token`
    *(Matches the existing Meta canonical endpoint `POST /ar/mobile/social/meta/connect-token` in `PASTEL_SOCIAL_AUTH_BACKEND_CONTRACT.md`).*
+
 2. **Single-Use Authorization Code**:
    Because an OAuth 2.0 `code` is strictly single-use, Flutter sends **exactly one** `POST` request per authorization flow using native cookie store credentials (`CookieManager` on Android, `WKHTTPCookieStore` on iOS). No fallback endpoint looping or automatic retries are performed.
+
 3. **HTTPS Redirect URI**:
    `https://pastel-eg.com/social-connections/tiktok/callback`
 
 ---
 
-## 2. OAuth `state`, PKCE, and Security Responsibilities
+## 2. OAuth `state`, PKCE, and Security Responsibilities (Threat Model & Boundaries)
 
-### A. Client-Generated `state` vs Server-Side Replay Protection
-Because the mobile app launches the native TikTok OpenSDK directly on the device (without an initial server round-trip to pre-register `state` in the Laravel session):
-1. **Mobile Client (`TikTokAuthService` + Native OpenSDK)**:
-   - Generates a 24-byte cryptographically random `state` (`Random.secure()`) before invoking the native SDK.
-   - Verifies that the callback `state` returned by TikTok equals the pending request's `state` at both the native layer (`MainActivity.kt` / `AppDelegate.swift`) and the Dart layer (`TikTokAuthService._parseNativeResponse`), then immediately wipes the pending state to prevent client-side replay.
-2. **Laravel Backend (`TikTokConnectController`)**:
-   - Does **not** compare `state` against a pre-stored session value (since the flow was initiated natively on the client).
-   - Instead, Laravel enforces:
-     1. Non-empty format validation on `state` (`required|string|min:8|max:128`).
-     2. **Atomic Server-Side Replay Lock**: Uses `Cache::add('tiktok_oauth_state_' . hash('sha256', $validated['state']), $user->id, now()->addMinutes(15))` so that the same `state` value can never be submitted more than once.
-     3. **Cryptographic Request-to-Token Binding via PKCE**: Forwards `code` and `code_verifier` to TikTok's `https://open.tiktokapis.com/v2/oauth/token/` endpoint, which verifies `SHA256_HEX(code_verifier) == code_challenge`.
-     4. **Server-Verified Account Identity & Scopes**: Ignores client-provided `granted_scopes` for authorization decisions; verifies granted scopes from TikTok's `/v2/oauth/token/` response (`scope`) and fetches account identity (`open_id`, `display_name`, `avatar_url`) directly from `https://open.tiktokapis.com/v2/user/info/`.
+Because the current Flutter flow initiates the native TikTok OpenSDK directly on the device without a prior backend round-trip to mint a server-issued `state`, it is essential to distinguish clearly between the four security layers below:
+
+### A. Client / Native Callback `state` Validation (Implemented in Flutter + Native SDK Layer)
+- **Mechanism**: `TikTokAuthService` generates a 24-byte cryptographically random `state` (`Random.secure()`) before invoking the native OpenSDK. Both the native layer (`MainActivity.kt` / `AppDelegate.swift`) and Dart (`TikTokAuthService._parseNativeResponse`) verify that the `state` returned by TikTok in the callback Intent/URL matches the in-flight request's `state`, then immediately wipe the pending session.
+- **What it protects against**: Forged or unsolicited local deep-link / App Link / Universal Link callbacks injected into the mobile app by another app or external link on the device.
+- **What it does NOT prove to Laravel**: Because `state` was generated on the client, submitting `state` in the `POST` body to Laravel does not by itself prove to the server that Laravel issued that `state`.
+
+### B. PKCE Protection (`code` ↔ `code_verifier`, Implemented End-to-End)
+- **Mechanism**: Native OpenSDK generates a cryptographically random `code_verifier` (`PKCEUtils.generateCodeVerifier()` on Android, `TTKSDKCodeVerifier` on iOS) and sends `code_challenge = HEX(SHA256(code_verifier))` to TikTok during authorization. Laravel forwards `code` and `code_verifier` to `https://open.tiktokapis.com/v2/oauth/token/`.
+- **What it protects against**: Authorization code interception on the mobile device (e.g., if a malicious app intercepts the redirect `code`, it cannot exchange it without the in-memory `code_verifier`).
+- **What it does NOT prevent**: If an attacker compromises their own device or initiates an OAuth flow on their own device to obtain a valid `(code, code_verifier)` pair for their own TikTok account, PKCE binds `code` to `code_verifier`, not to a specific Laravel user session.
+
+### C. Server-Side Replay Protection via `Cache::add` (Implemented in `TikTokConnectController`)
+- **Mechanism**: `Cache::add('tiktok_oauth_state_' . hash('sha256', $validated['state']), $user->id, now()->addMinutes(15))`.
+- **What threat it actually prevents**: Duplicate or replayed submission of the **exact same** `state` string within the 15-minute window (e.g., network/proxy replay of a captured `/connect-token` request).
+- **What it does NOT do**:
+  1. It does **not** prove that `state` was originally issued by Laravel for `auth()->user()`.
+  2. An caller who possesses a valid `(code, code_verifier)` pair could submit any fresh, unused random `state` string and pass `Cache::add`.
+  3. Primary protection against cross-user request forgery on `POST /ar/mobile/social/tiktok/connect-token` therefore relies on **Laravel session authentication + CSRF verification (`X-CSRF-TOKEN` / `X-XSRF-TOKEN`)**, combined with `social_accounts` uniqueness (`provider_id` cannot be linked to another `user_id`).
+
+### D. True Server-Issued Session-Bound OAuth `state` (Optional Backend Hardening)
+- **Current status**: Not currently active because the web page invokes `PastelSocialBridge.postMessage({ action: 'connect', provider: 'tiktok' })` without a server-minted `state`, and Flutter does not call a pre-auth backend endpoint.
+- **Smallest optional backend upgrade (if strict server-bound `state` is desired later)**:
+  1. When rendering the Social Connections Blade/Inertia page (or via a lightweight endpoint before calling the JS bridge), Laravel generates `$state = Str::random(40)` and stores it in the authenticated user's session (`session()->put('tiktok_oauth_state', ['value' => $state, 'expires_at' => now()->addMinutes(10)->timestamp])`).
+  2. In `TikTokConnectController::connectToken`, replace or supplement `Cache::add` with `session()->pull('tiktok_oauth_state')` and assert `hash_equals($expectedState, $validated['state'])`.
+  *(Note: Until the web frontend passes a server-issued `state` into the bridge call and Flutter forwards it, Laravel should use the `Cache::add` replay lock + CSRF middleware shown in the controller below so existing mobile builds work out of the box).*
 
 ---
 

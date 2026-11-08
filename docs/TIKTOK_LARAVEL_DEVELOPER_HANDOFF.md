@@ -212,3 +212,26 @@ class TikTokConnectController extends Controller
     }
 }
 ```
+
+---
+
+## 3. توضيح أمني هام حول `state` و `PKCE` و `Cache::add` (Threat Model & Security Boundaries)
+
+لضمان الدقة الأمنية الكاملة عند مراجعة الكود، يجب التفرقة بوضوح بين 4 آليات حماية مختلفة في هذا التدفق:
+
+1. **التحقق من `state` داخل تطبيق الموبايل (Client / Native Callback Validation)**:
+   - يقوم تطبيق Flutter بتوليد قيمة `state` عشوائية آمنة (`Random.secure()`) قبل فتح تطبيق TikTok، ويتحقق في طبقة الـ Native (`MainActivity.kt` / `AppDelegate.swift`) وطبقة الـ Dart (`TikTokAuthService`) من أن الـ `state` العائد من TikTok يطابق الـ `state` الأصلي، ثم يمسحه فوراً.
+   - **ماذا يحمي؟** يمنع حقن استجابات Deep Link / App Link / Universal Link مزورة من تطبيق خارجي على جهاز المستخدم.
+
+2. **حماية PKCE (`code` ↔ `code_verifier`)**:
+   - يربط رمز التفويض `code` حسابياً بمفتاح `code_verifier` عبر `code_challenge = HEX(SHA256(code_verifier))`.
+   - **ماذا يحمي؟** يمنع أي طرف يعترض رمز `code` أثناء إعادة التوجيه من استبداله بتوكن بدون امتلاك `code_verifier`.
+
+3. **قفل عدم التكرار عبر `Cache::add` في لارافيل (Server-Side One-Time Replay Lock)**:
+   - السطر `Cache::add('tiktok_oauth_state_' . hash('sha256', $validated['state']), $user->id, now()->addMinutes(15))` يمنع **إعادة إرسال (Replay) نفس قيمة `state` المستهلكة مرة أخرى** خلال 15 دقيقة.
+   - **تنبيه أمني صريح**: بما أن `state` في التدفق الحالي يتم توليده داخل تطبيق الموبايل (بدون طلب مسبق من السيرفر قبل فتح TikTok)، فإن `Cache::add` **لا يثبت** أن السيرفر هو من أصدر هذا الـ `state` لجلسة المستخدم الحالية، ولو امتلك مهاجم زوجاً صالحاً من `(code, code_verifier)` لحسابه الخاص فبإمكانه إرسال أي `state` عشوائي جديد لم يُستخدم من قبل. لذلك فإن الحماية الأساسية ضد هجمات الربط القسري (Login/Connect CSRF) على مسار `POST /ar/mobile/social/tiktok/connect-token` تعتمد على **تحقق لارافيل من جلسة المستخدم (`auth()->user()`) + توكن الحماية `X-CSRF-TOKEN` / `X-XSRF-TOKEN`**.
+
+4. **توصية اختيارية للربط الصارم بالجلسة (Optional Server-Issued Session-Bound `state`)**:
+   - إذا رغب فريق الباك إند مستقبلاً في جعل `state` صادراً من السيرفر ومرتبطاً بجلسة لارافيل قبل بدء الربط، فإن أصغر تعديل اختياري (بدون الحاجة لبناء مسار شبكي معقد) هو:
+     - إصدار `state` من لارافيل عند عرض صفحة ربط الحسابات وتخزينه في الجلسة `session()->put('tiktok_oauth_state', $state)`، وتمريره من الويب عبر `PastelSocialBridge` ليستخدمه التطبيق بدلاً من التوليد المحلي، ثم التحقق منه في `TikTokConnectController` عبر `hash_equals((string) session()->pull('tiktok_oauth_state'), $validated['state'])`.
+     - **ملاحظة**: إلى أن يتم تفعيل هذا الخيار في صفحة الويب، يُعتمد الكود الموضح أعلاه (`Cache::add` + حماية CSRF للجلسة) ليعمل التطبيق الحالي مباشرة دون أي تعارض.

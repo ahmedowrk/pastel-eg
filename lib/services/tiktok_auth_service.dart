@@ -60,6 +60,7 @@ class TikTokAuthService {
   static final TikTokAuthService instance = TikTokAuthService._internal();
 
   static const MethodChannel _channel = MethodChannel('com.pasteleg.app/tiktok_sdk');
+  static const Duration kAuthTimeout = Duration(minutes: 2);
 
   Completer<TikTokAuthResult>? _pendingCompleter;
   String? _pendingState;
@@ -67,12 +68,16 @@ class TikTokAuthService {
   DateTime? _authStartedAt;
   Timer? _authTimeoutTimer;
 
-  /// Returns true if a request was started less than 1.5 seconds ago (rapid double-tap guard).
-  bool get isRapidDuplicateTap {
-    if (_pendingCompleter == null || _pendingCompleter!.isCompleted || _authStartedAt == null) {
+  /// Returns true if an active authorization session exists and has exceeded [kAuthTimeout]
+  /// (e.g., if the OS suspended the Dart Timer while the app was backgrounded).
+  bool get isPendingSessionExpired {
+    if (_pendingCompleter == null || _pendingCompleter!.isCompleted) {
       return false;
     }
-    return DateTime.now().difference(_authStartedAt!).inMilliseconds < 1500;
+    if (_authStartedAt == null) {
+      return true;
+    }
+    return DateTime.now().difference(_authStartedAt!) >= kAuthTimeout;
   }
 
   /// Generates a high-entropy cryptographic anti-CSRF state string.
@@ -113,12 +118,12 @@ class TikTokAuthService {
 
   /// Initiates the official TikTok OpenSDK Login Kit v2 authorization flow.
   ///
+  /// - Preserves any active in-flight authorization request until it completes, is explicitly
+  ///   cancelled via [cancel], or exceeds [kAuthTimeout].
   /// - Prioritizes the installed TikTok native app (`AuthMethod.TikTokApp` on Android,
   ///   Universal Link handoff on iOS).
   /// - Falls back to `AuthMethod.ChromeTab` (Android) or `ASWebAuthenticationSession` (iOS)
   ///   when the TikTok app is not installed.
-  /// - PKCE (`code_verifier` and hex-encoded SHA-256 `code_challenge`) is generated
-  ///   directly by the native TikTok OpenSDK (`PKCEUtils` on Android, `TTKSDKCodeVerifier` on iOS).
   Future<TikTokAuthResult> authorize({
     List<String> scopes = AppConstants.tiktokDefaultScopes,
     String? clientKey,
@@ -126,14 +131,16 @@ class TikTokAuthService {
     bool preferNative = true,
   }) async {
     if (_pendingCompleter != null && !_pendingCompleter!.isCompleted) {
-      if (isRapidDuplicateTap) {
+      if (isPendingSessionExpired) {
+        // Recover only when the previous session genuinely exceeded the 2-minute timeout
+        _expireStaleSession();
+      } else {
+        // Never interrupt or supersede an active authorization request
         return const TikTokAuthResult(
           status: TikTokAuthStatus.failed,
           errorMessage: 'هناك عملية تسجيل دخول نشطة حالياً عبر تيك توك.',
         );
       }
-      // Supersede previous abandoned request when user returns to the app and taps Connect again
-      cancel();
     }
 
     final String key = clientKey ?? AppConstants.tiktokClientKey;
@@ -150,14 +157,9 @@ class TikTokAuthService {
 
     // 2-minute timeout guard in case user abandons the external TikTok app or Chrome Custom Tab
     _authTimeoutTimer?.cancel();
-    _authTimeoutTimer = Timer(const Duration(minutes: 2), () {
-      if (!completer.isCompleted) {
-        _channel.invokeMethod('cancel').catchError((_) {});
-        _cleanup();
-        completer.complete(const TikTokAuthResult(
-          status: TikTokAuthStatus.cancelled,
-          errorMessage: 'انتهت مهلة عملية تسجيل الدخول عبر تيك توك.',
-        ));
+    _authTimeoutTimer = Timer(kAuthTimeout, () {
+      if (_pendingCompleter == completer && !completer.isCompleted) {
+        _expireStaleSession();
       }
     });
 
@@ -171,7 +173,7 @@ class TikTokAuthService {
         'language': 'ar',
       });
 
-      if (!completer.isCompleted && rawResponse is Map) {
+      if (_pendingCompleter == completer && !completer.isCompleted && rawResponse is Map) {
         final TikTokAuthResult parsed = _parseNativeResponse(
           Map<String, dynamic>.from(rawResponse),
         );
@@ -179,7 +181,7 @@ class TikTokAuthService {
         completer.complete(parsed);
       }
     } on PlatformException catch (e) {
-      if (!completer.isCompleted) {
+      if (_pendingCompleter == completer && !completer.isCompleted) {
         _cleanup();
         completer.complete(TikTokAuthResult(
           status: TikTokAuthStatus.failed,
@@ -187,7 +189,7 @@ class TikTokAuthService {
         ));
       }
     } catch (_) {
-      if (!completer.isCompleted) {
+      if (_pendingCompleter == completer && !completer.isCompleted) {
         _cleanup();
         completer.complete(const TikTokAuthResult(
           status: TikTokAuthStatus.failed,
@@ -204,10 +206,10 @@ class TikTokAuthService {
   Future<dynamic> _handleNativeMethodCall(MethodCall call) async {
     if (call.method == 'onAuthResponse' && call.arguments is Map) {
       if (_pendingCompleter != null && !_pendingCompleter!.isCompleted) {
+        final Completer<TikTokAuthResult> active = _pendingCompleter!;
         final TikTokAuthResult parsed = _parseNativeResponse(
           Map<String, dynamic>.from(call.arguments as Map),
         );
-        final Completer<TikTokAuthResult> active = _pendingCompleter!;
         _cleanup();
         active.complete(parsed);
       }
@@ -308,16 +310,29 @@ class TikTokAuthService {
     return false;
   }
 
-  /// Cancels any in-flight authorization request.
+  void _expireStaleSession() {
+    _channel.invokeMethod('cancel').catchError((_) {});
+    final Completer<TikTokAuthResult>? active = _pendingCompleter;
+    _cleanup();
+    if (active != null && !active.isCompleted) {
+      active.complete(const TikTokAuthResult(
+        status: TikTokAuthStatus.cancelled,
+        errorMessage: 'انتهت مهلة عملية تسجيل الدخول عبر تيك توك.',
+      ));
+    }
+  }
+
+  /// Explicitly cancels any in-flight authorization request.
   void cancel() {
     _channel.invokeMethod('cancel').catchError((_) {});
-    if (_pendingCompleter != null && !_pendingCompleter!.isCompleted) {
-      _pendingCompleter!.complete(const TikTokAuthResult(
+    final Completer<TikTokAuthResult>? active = _pendingCompleter;
+    _cleanup();
+    if (active != null && !active.isCompleted) {
+      active.complete(const TikTokAuthResult(
         status: TikTokAuthStatus.cancelled,
         errorMessage: 'تم إلغاء العملية بواسطة المستخدم.',
       ));
     }
-    _cleanup();
   }
 
   void _cleanup() {

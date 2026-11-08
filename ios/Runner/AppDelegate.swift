@@ -6,9 +6,9 @@ import TikTokOpenAuthSDK
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
-
   private static let channelName = "com.pasteleg.app/tiktok_sdk"
   private static let defaultRedirectUri = "https://pastel-eg.com/social-connections/tiktok/callback"
+  private static let activeAuthTimeout: TimeInterval = 120
 
   // Strong reference to active TikTokAuthRequest as required by TikTokOpenAuthSDK.
   // Never cleared on applicationWillResignActive/applicationDidBecomeActive because
@@ -16,6 +16,7 @@ import TikTokOpenAuthSDK
   private var currentTikTokAuthRequest: TikTokAuthRequest?
   private var pendingFlutterResult: FlutterResult?
   private var pendingState: String?
+  private var pendingStartedAt: Date?
   private var registeredChannel: FlutterMethodChannel?
 
   override func application(
@@ -34,6 +35,7 @@ import TikTokOpenAuthSDK
       name: AppDelegate.channelName,
       binaryMessenger: flutterController.binaryMessenger
     )
+
     channel.setMethodCallHandler { [weak self] (call, result) in
       guard let self = self else { return }
       switch call.method {
@@ -90,11 +92,26 @@ import TikTokOpenAuthSDK
     return false
   }
 
+  private func isPendingSessionExpired() -> Bool {
+    guard let startedAt = pendingStartedAt else { return true }
+    return Date().timeIntervalSince(startedAt) > AppDelegate.activeAuthTimeout
+  }
+
   private func handleAuthorize(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    // If a previous authorization request was abandoned by the user returning to the app
-    // without triggering a callback, cleanly complete the stale FlutterResult as cancelled
-    // before starting the new request.
-    if pendingFlutterResult != nil {
+    // Active-request protection:
+    // Never cancel or overwrite an active, non-expired authorization session.
+    // Only recover if a prior session genuinely exceeded activeAuthTimeout (2 minutes).
+    if pendingFlutterResult != nil || currentTikTokAuthRequest != nil {
+      if !isPendingSessionExpired() {
+        result(
+          FlutterError(
+            code: "DUPLICATE_REQUEST",
+            message: "A TikTok authorization request is already in progress.",
+            details: nil
+          )
+        )
+        return
+      }
       cancelActivePendingSession()
     }
 
@@ -128,6 +145,7 @@ import TikTokOpenAuthSDK
     self.currentTikTokAuthRequest = authRequest
     self.pendingFlutterResult = result
     self.pendingState = state
+    self.pendingStartedAt = Date()
 
     let sent = authRequest.send { [weak self] baseResponse in
       guard let self = self else { return }
@@ -226,6 +244,7 @@ import TikTokOpenAuthSDK
     self.currentTikTokAuthRequest = nil
     self.pendingFlutterResult = nil
     self.pendingState = nil
+    self.pendingStartedAt = nil
   }
 
   override func application(
