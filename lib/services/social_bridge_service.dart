@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'facebook_auth_service.dart';
 import 'social_backend_service.dart';
+import 'tiktok_auth_service.dart';
+import 'tiktok_backend_service.dart';
+
 
 /// Secure JavaScript Bridge Service managing bidirectional communication
 /// between the Pastel website (inside WebView) and Flutter Native authentication.
@@ -79,6 +82,13 @@ class SocialBridgeService {
   /// Processes messages received from the `PastelNativeChannel` JavaScript Channel.
     /// Directly starts native Meta login without waiting for a JS message.
   /// Used when an OAuth navigation attempt is intercepted from the WebView.
+    /// Directly starts native TikTok login without waiting for a JS message.
+  /// Used when an OAuth navigation attempt is intercepted from the WebView.
+  Future<void> startDirectTikTokLogin() async {
+    final String reqId = 'direct_tiktok_${DateTime.now().millisecondsSinceEpoch}';
+    await _handleConnectAction(reqId, 'tiktok');
+  }
+
   Future<void> startDirectFacebookLogin({String provider = 'facebook'}) async {
     final String reqId = 'direct_${DateTime.now().millisecondsSinceEpoch}';
     await _handleConnectAction(reqId, provider);
@@ -144,7 +154,7 @@ class SocialBridgeService {
 
   /// Handles `connect_social_account` for facebook/instagram
   Future<void> _handleConnectAction(String requestId, String provider) async {
-    if (provider != 'facebook' && provider != 'instagram') {
+    if (provider != 'facebook' && provider != 'instagram' && provider != 'tiktok') {
       _dispatchError(requestId, provider, 'unsupported', 'Provider "$provider" is not supported.');
       return;
     }
@@ -152,6 +162,11 @@ class SocialBridgeService {
     // Duplicate request prevention: reject if another auth flow is active
     if (_currentAuthCompleter != null && !_currentAuthCompleter!.isCompleted) {
       _dispatchError(requestId, provider, 'duplicate_request', 'An authorization request is already in progress.');
+      return;
+    }
+
+    if (provider == 'tiktok') {
+      await _handleTikTokConnectAction(requestId);
       return;
     }
 

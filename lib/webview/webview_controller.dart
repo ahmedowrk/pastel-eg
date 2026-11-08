@@ -12,6 +12,7 @@ import '../firebase/notification_service.dart';
 import '../services/device_info_service.dart';
 import '../services/notification_state_service.dart';
 import '../services/social_bridge_service.dart';
+import '../services/tiktok_auth_service.dart';
 import '../utils/constants.dart';
 
 /// iOS Mobile Safari User-Agent (without "Android" or "wv").
@@ -299,6 +300,27 @@ class AppWebViewController with WidgetsBindingObserver {
       // Trigger Native Facebook Login flow directly
       SocialBridgeService.instance.startDirectFacebookLogin(provider: 'facebook');
       return NavigationDecision.prevent;
+    }
+
+    // Intercept TikTok OAuth navigation: NEVER open inside embedded WebView!
+    final bool isTikTokConnect = (uri.host.contains('pastel-eg.com') &&
+        uri.path.contains('/social-connections/tiktok/connect')) ||
+        (uri.host.contains('tiktok.com') && uri.path.contains('/auth/authorize'));
+
+    if (isTikTokConnect) {
+      // Trigger Native TikTok Login flow with PKCE directly
+      SocialBridgeService.instance.startDirectTikTokLogin();
+      return NavigationDecision.prevent;
+    }
+
+    // Intercept TikTok OAuth callback redirect
+    final bool isTikTokCallback = (uri.host.contains('pastel-eg.com') &&
+        uri.path.contains('/social-connections/tiktok/callback')) ||
+        (uri.scheme == 'pastel' && uri.host == 'tiktok-auth');
+
+    if (isTikTokCallback) {
+      final handled = TikTokAuthService.instance.handleCallbackUri(uri);
+      if (handled) return NavigationDecision.prevent;
     }
 
     final isSpecialScheme = !uri.scheme.startsWith('http');

@@ -37,4 +37,24 @@ class AppConstants {
   static const String payloadKeyType = 'type';
   static const String payloadKeyTitle = 'title';
   static const String payloadKeyBody = 'body';
+
+  /// TikTok Login Kit configuration
+  /// Replace with your Client Key from TikTok Developer Portal -> Manage Apps
+  static const String tiktokClientKey = 'aw1234567890';
+
+  /// Standard scopes required for TikTok profile identity and account linking
+  static const List<String> tiktokDefaultScopes = [
+    'user.info.basic',
+  ];
+
+  /// TikTok OAuth redirect URIs
+  static const String tiktokWebRedirectUri =
+      '$defaultWebsiteUrl/provider/automation-settings/provider/social-connections/tiktok/callback';
+  static const String tiktokCustomSchemeUri = 'pastel://tiktok-auth';
+
+  /// TikTok backend connection endpoints
+  static const String tiktokConnectTokenPath =
+      '/provider/automation-settings/provider/social-connections/tiktok/connect-token';
+  static const String tiktokMobileConnectTokenPath =
+      '/ar/mobile/social/tiktok/connect-token';
 }

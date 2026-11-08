@@ -25,13 +25,21 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 
-	<!-- URL Schemes for Facebook Login Callback -->
+	<!-- URL Schemes for Facebook & TikTok Deep Link Callbacks -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>fb2184428119002213</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.pasteleg.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>pastel</string>
 			</array>
 		</dict>
 	</array>
@@ -44,11 +52,15 @@
 	<key>FacebookDisplayName</key>
 	<string>Pastel</string>
 
-	<!-- Allow Facebook App Queries -->
+	<!-- Allow Facebook & TikTok App Queries -->
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>fbapi</string>
 		<string>fb-messenger-share-api</string>
+		<string>tiktokopensdk</string>
+		<string>tiktoksharesdk</string>
+		<string>snssdk1180</string>
+		<string>snssdk1233</string>
 	</array>
 
 	<key>UILaunchStoryboardName</key>

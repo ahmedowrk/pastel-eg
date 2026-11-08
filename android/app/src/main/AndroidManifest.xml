@@ -59,6 +59,13 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- TikTok OAuth Deep Link Callback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="pastel" android:host="tiktok-auth" />
+            </intent-filter>
         </activity>
 
         <!-- Don't delete the meta-data below.
@@ -77,5 +84,8 @@
         <!-- Allow querying the Facebook app so it appears in the share/open chooser -->
         <package android:name="com.facebook.katana" />
         <package android:name="com.facebook.lite" />
+        <!-- Allow querying the TikTok app so native authorization can be initiated -->
+        <package android:name="com.zhiliaoapp.musically" />
+        <package android:name="com.ss.android.ugc.trill" />
     </queries>
 </manifest>
