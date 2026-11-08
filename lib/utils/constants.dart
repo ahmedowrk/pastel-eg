@@ -38,22 +38,31 @@ class AppConstants {
   static const String payloadKeyTitle = 'title';
   static const String payloadKeyBody = 'body';
 
-  /// TikTok Login Kit configuration
-  /// Replace with your Client Key from TikTok Developer Portal -> Manage Apps
-  static const String tiktokClientKey = 'aw1234567890';
+  /// TikTok Login Kit v2 configuration (Official OpenSDK)
+  /// Client Key from TikTok Developer Portal -> Manage Apps
+  static const String tiktokClientKey = 'aw68o0783j7z9eeg';
 
   /// Standard scopes required for TikTok profile identity and account linking
   static const List<String> tiktokDefaultScopes = [
     'user.info.basic',
   ];
 
-  /// TikTok OAuth redirect URIs
+  /// TikTok Login Kit v2 Official HTTPS Redirect URI
+  /// Must be registered in TikTok Developer Portal and backed by:
+  /// - Android App Links (`/.well-known/assetlinks.json` + `android:autoVerify="true"`)
+  /// - iOS Universal Links (`/.well-known/apple-app-site-association` + `applinks:pastel-eg.com`)
+  static const String tiktokRedirectUri =
+      '$defaultWebsiteUrl/social-connections/tiktok/callback';
+
   static const String tiktokWebRedirectUri =
       '$defaultWebsiteUrl/provider/automation-settings/provider/social-connections/tiktok/callback';
-  static const String tiktokCustomSchemeUri = 'pastel://tiktok-auth';
 
-  /// TikTok backend connection endpoints
+  /// TikTok backend connection endpoints on Laravel
   static const String tiktokConnectTokenPath =
+      '/provider/mobile/social/connect-token';
+  static const String tiktokFallbackConnectTokenPath =
+      '/provider/social/connect-token';
+  static const String tiktokLegacyConnectTokenPath =
       '/provider/automation-settings/provider/social-connections/tiktok/connect-token';
   static const String tiktokMobileConnectTokenPath =
       '/ar/mobile/social/tiktok/connect-token';

@@ -1,12 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/services.dart';
 import '../utils/constants.dart';
 
-/// Result status of a native TikTok authorization request.
+/// Result status of a native TikTok OpenSDK authorization request.
 enum TikTokAuthStatus {
   success,
   cancelled,
@@ -15,7 +14,7 @@ enum TikTokAuthStatus {
   unsupported,
 }
 
-/// Container for the result of a TikTok authorization attempt.
+/// Container for the result of a TikTok OpenSDK authorization attempt.
 class TikTokAuthResult {
   final TikTokAuthStatus status;
   final String? code;
@@ -23,6 +22,7 @@ class TikTokAuthResult {
   final String? state;
   final String? redirectUri;
   final Set<String> grantedScopes;
+  final bool usedNativeApp;
   final String? errorMessage;
 
   const TikTokAuthResult({
@@ -32,60 +32,77 @@ class TikTokAuthResult {
     this.state,
     this.redirectUri,
     this.grantedScopes = const {},
+    this.usedNativeApp = false,
     this.errorMessage,
   });
 
-  bool get isSuccess => status == TikTokAuthStatus.success && code != null && codeVerifier != null;
+  bool get isSuccess =>
+      status == TikTokAuthStatus.success &&
+      code != null &&
+      code!.isNotEmpty &&
+      codeVerifier != null &&
+      codeVerifier!.isNotEmpty;
 }
 
-/// Service managing the Native TikTok OAuth 2.0 Authorization Code flow with PKCE.
-///
-/// Complies with official TikTok Login Kit v2:
-/// - Generates cryptographic PKCE pair (code_verifier and S256 code_challenge)
-/// - Generates secure anti-CSRF state token
-/// - Requests official approved scopes (e.g. user.info.basic)
-/// - Launches official native flow via TikTok App / system browser (NEVER embedded WebView)
-/// - Handles callback extraction and state validation
+/// Service bridging Flutter to the official native TikTok OpenSDK v2:
+/// - Android: `com.tiktok.open.sdk:tiktok-open-sdk-auth:2.4.0` (`AuthApi`, `AuthRequest`, `PKCEUtils`)
+///   using `AuthApi.AuthMethod.TikTokApp` (which verifies and launches the installed TikTok app via
+///   `TikTokAppCheckUtil` and falls back to `AuthApi.AuthMethod.ChromeTab` via `CustomTabsIntent`).
+/// - iOS: `TikTokOpenAuthSDK` (`~> 2.5.0`) (`TikTokAuthRequest`, `TTKSDKCodeVerifier`, `TikTokURLHandler`)
+///   using Universal Links (`https://pastel-eg.com/social-connections/tiktok/callback`) and
+///   `ASWebAuthenticationSession` fallback.
 class TikTokAuthService {
-  TikTokAuthService._internal();
+  TikTokAuthService._internal() {
+    _channel.setMethodCallHandler(_handleNativeMethodCall);
+  }
+
   static final TikTokAuthService instance = TikTokAuthService._internal();
+
+  static const MethodChannel _channel = MethodChannel('com.pasteleg.app/tiktok_sdk');
 
   Completer<TikTokAuthResult>? _pendingCompleter;
   String? _pendingState;
-  String? _pendingCodeVerifier;
   String? _pendingRedirectUri;
   Timer? _authTimeoutTimer;
 
-  /// Generates a high-entropy cryptographic code_verifier conforming to RFC 7636.
-  String _generateCodeVerifier() {
-    final Random random = Random.secure();
-    final List<int> values = List<int>.generate(64, (_) => random.nextInt(256));
-    return base64UrlEncode(values).replaceAll('=', '').replaceAll('+', '-').replaceAll('/', '_');
-  }
-
-  /// Calculates the S256 code_challenge from the code_verifier.
-  String _generateCodeChallenge(String verifier) {
-    final List<int> bytes = ascii.encode(verifier);
-    final Digest digest = sha256.convert(bytes);
-    return base64UrlEncode(digest.bytes).replaceAll('=', '').replaceAll('+', '-').replaceAll('/', '_');
-  }
-
-  /// Generates a secure random state string.
+  /// Generates a high-entropy cryptographic anti-CSRF state string.
   String _generateState() {
     final Random random = Random.secure();
     final List<int> values = List<int>.generate(24, (_) => random.nextInt(256));
-    return base64UrlEncode(values).replaceAll('=', '').replaceAll('+', '-').replaceAll('/', '_');
+    return base64UrlEncode(values)
+        .replaceAll('=', '')
+        .replaceAll('+', '-')
+        .replaceAll('/', '_');
   }
 
-  /// Initiates the TikTok Login Kit authorization flow.
+  /// Queries the native TikTok OpenSDK to determine if the official TikTok app
+  /// is installed and signature-verified on the user's device.
+  Future<bool> isTikTokAppInstalled() async {
+    try {
+      final bool? installed = await _channel.invokeMethod<bool>('isTikTokInstalled');
+      return installed ?? false;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('[TikTokAuthService] isTikTokAppInstalled error: $e');
+      }
+      return false;
+    }
+  }
+
+  /// Initiates the official TikTok OpenSDK Login Kit v2 authorization flow.
   ///
-  /// Opens the native TikTok application when available, or system browser fallback.
+  /// - Prioritizes the installed TikTok native app (`AuthMethod.TikTokApp` on Android,
+  ///   Universal Link handoff on iOS).
+  /// - Falls back to `AuthMethod.ChromeTab` (Android) or `ASWebAuthenticationSession` (iOS)
+  ///   when the TikTok app is not installed.
+  /// - PKCE (`code_verifier` and hex-encoded SHA-256 `code_challenge`) is generated
+  ///   directly by the native TikTok OpenSDK (`PKCEUtils` on Android, `TTKSDKCodeVerifier` on iOS).
   Future<TikTokAuthResult> authorize({
     List<String> scopes = AppConstants.tiktokDefaultScopes,
     String? clientKey,
     String? redirectUri,
+    bool preferNative = true,
   }) async {
-    // Prevent duplicate concurrent authorization requests
     if (_pendingCompleter != null && !_pendingCompleter!.isCompleted) {
       return const TikTokAuthResult(
         status: TikTokAuthStatus.failed,
@@ -93,24 +110,22 @@ class TikTokAuthService {
       );
     }
 
-    final key = clientKey ?? AppConstants.tiktokClientKey;
-    final rUri = redirectUri ?? AppConstants.tiktokWebRedirectUri;
-
-    final String verifier = _generateCodeVerifier();
-    final String challenge = _generateCodeChallenge(verifier);
+    final String key = clientKey ?? AppConstants.tiktokClientKey;
+    final String rUri = redirectUri ?? AppConstants.tiktokRedirectUri;
     final String state = _generateState();
+    final String scopesString = scopes.join(',');
 
     _pendingState = state;
-    _pendingCodeVerifier = verifier;
     _pendingRedirectUri = rUri;
 
     final Completer<TikTokAuthResult> completer = Completer<TikTokAuthResult>();
     _pendingCompleter = completer;
 
-    // Timeout guard: 2 minutes for user interaction
+    // 2-minute timeout guard in case user abandons the external TikTok app or Chrome Custom Tab
     _authTimeoutTimer?.cancel();
     _authTimeoutTimer = Timer(const Duration(minutes: 2), () {
       if (!completer.isCompleted) {
+        _channel.invokeMethod('cancel').catchError((_) {});
         _cleanup();
         completer.complete(const TikTokAuthResult(
           status: TikTokAuthStatus.cancelled,
@@ -119,118 +134,161 @@ class TikTokAuthService {
       }
     });
 
-    final scopesString = scopes.join(',');
-
-    final Uri authUri = Uri.https('www.tiktok.com', '/v2/auth/authorize/', {
-      'client_key': key,
-      'scope': scopesString,
-      'response_type': 'code',
-      'redirect_uri': rUri,
-      'state': state,
-      'code_challenge': challenge,
-      'code_challenge_method': 'S256',
-    });
-
     try {
       if (kDebugMode) {
-        debugPrint('[TikTokAuthService] Launching TikTok Login: $authUri');
-      }
-
-      // Launch with LaunchMode.externalApplication to trigger native TikTok app or system browser
-      final bool launched = await launchUrl(
-        authUri,
-        mode: LaunchMode.externalApplication,
-      );
-
-      if (!launched) {
-        _cleanup();
-        return const TikTokAuthResult(
-          status: TikTokAuthStatus.unsupported,
-          errorMessage: 'تعذر فتح تطبيق تيك توك أو المتصفح الخارجي للمصادقة.',
+        debugPrint(
+          '[TikTokAuthService] Invoking Native TikTok OpenSDK (preferNative: $preferNative, redirectUri: $rUri)',
         );
       }
+
+      final dynamic rawResponse = await _channel.invokeMethod<dynamic>('authorize', {
+        'clientKey': key,
+        'scope': scopesString,
+        'redirectUri': rUri,
+        'state': state,
+        'preferNative': preferNative,
+        'language': 'ar',
+      });
+
+      if (!completer.isCompleted && rawResponse is Map) {
+        final TikTokAuthResult parsed = _parseNativeResponse(
+          Map<String, dynamic>.from(rawResponse),
+        );
+        _cleanup();
+        completer.complete(parsed);
+      }
+    } on PlatformException catch (e) {
+      if (!completer.isCompleted) {
+        _cleanup();
+        completer.complete(TikTokAuthResult(
+          status: TikTokAuthStatus.failed,
+          errorMessage: e.message ?? 'تعذر تشغيل مصادقة تيك توك الأصلية (${e.code}).',
+        ));
+      }
     } catch (e) {
-      _cleanup();
-      return TikTokAuthResult(
-        status: TikTokAuthStatus.failed,
-        errorMessage: 'حدث خطأ أثناء تشغيل تيك توك: $e',
-      );
+      if (!completer.isCompleted) {
+        _cleanup();
+        completer.complete(TikTokAuthResult(
+          status: TikTokAuthStatus.failed,
+          errorMessage: 'حدث خطأ أثناء تشغيل تيك توك: $e',
+        ));
+      }
     }
 
     return completer.future;
   }
 
-  /// Processes the redirect callback URI returned by TikTok.
-  ///
-  /// Extracts code and state, validates state, and completes the in-flight authorization.
-  bool handleCallbackUri(Uri uri) {
-    final Map<String, String> params = uri.queryParameters;
-    final String? code = params['code'];
-    final String? state = params['state'];
-    final String? error = params['error'];
-    final String? errorDesc = params['error_description'];
-    final String? scopesParam = params['scopes'];
-
-    if (_pendingCompleter == null || _pendingCompleter!.isCompleted) {
-      if (kDebugMode) {
-        debugPrint('[TikTokAuthService] Received callback without pending request.');
+  /// Handles asynchronous `onAuthResponse` events dispatched from `MainActivity.onNewIntent`
+  /// if the activity was recreated while backgrounded.
+  Future<dynamic> _handleNativeMethodCall(MethodCall call) async {
+    if (call.method == 'onAuthResponse' && call.arguments is Map) {
+      if (_pendingCompleter != null && !_pendingCompleter!.isCompleted) {
+        final TikTokAuthResult parsed = _parseNativeResponse(
+          Map<String, dynamic>.from(call.arguments as Map),
+        );
+        final Completer<TikTokAuthResult> active = _pendingCompleter!;
+        _cleanup();
+        active.complete(parsed);
       }
-      return false;
     }
-
-    // Check for user cancellation or denied permission
-    if (error != null) {
-      final isCancelled = error == 'user_cancelled' || error == 'access_denied';
-      final result = TikTokAuthResult(
-        status: isCancelled ? TikTokAuthStatus.cancelled : TikTokAuthStatus.failed,
-        errorMessage: errorDesc ?? 'تم إلغاء عملية تسجيل الدخول من تيك توك.',
-      );
-      _pendingCompleter!.complete(result);
-      _cleanup();
-      return true;
-    }
-
-    // Anti-CSRF verification: state must match
-    if (state == null || state != _pendingState) {
-      final result = const TikTokAuthResult(
-        status: TikTokAuthStatus.failed,
-        errorMessage: 'فشل التحقق الأمني: عدم تطابق رمز الحماية (State Mismatch).',
-      );
-      _pendingCompleter!.complete(result);
-      _cleanup();
-      return true;
-    }
-
-    if (code == null || code.isEmpty) {
-      final result = const TikTokAuthResult(
-        status: TikTokAuthStatus.failed,
-        errorMessage: 'لم يتم استلام رمز المصادقة (Authorization Code) من تيك توك.',
-      );
-      _pendingCompleter!.complete(result);
-      _cleanup();
-      return true;
-    }
-
-    final Set<String> grantedScopes = scopesParam != null
-        ? scopesParam.split(',').map((s) => s.trim()).toSet()
-        : <String>{};
-
-    final result = TikTokAuthResult(
-      status: TikTokAuthStatus.success,
-      code: code,
-      codeVerifier: _pendingCodeVerifier,
-      state: state,
-      redirectUri: _pendingRedirectUri,
-      grantedScopes: grantedScopes,
-    );
-
-    _pendingCompleter!.complete(result);
-    _cleanup();
-    return true;
+    return null;
   }
 
-  /// Cancels in-flight authorization request.
+  TikTokAuthResult _parseNativeResponse(Map<String, dynamic> map) {
+    final String statusStr = (map['status']?.toString() ?? 'failed').toLowerCase();
+    final String? code = map['code']?.toString();
+    final String? codeVerifier = map['codeVerifier']?.toString();
+    final String? responseState = map['state']?.toString();
+    final String? redirectUri = map['redirectUri']?.toString() ?? _pendingRedirectUri;
+    final String? grantedStr = map['grantedPermissions']?.toString();
+    final bool usedNativeApp = map['usedNativeApp'] == true;
+    final String? errorMessage = map['errorMessage']?.toString();
+
+    if (statusStr == 'success') {
+      // Anti-CSRF state check (defense-in-depth on top of native verification)
+      if (_pendingState != null &&
+          _pendingState!.isNotEmpty &&
+          responseState != _pendingState) {
+        return TikTokAuthResult(
+          status: TikTokAuthStatus.failed,
+          usedNativeApp: usedNativeApp,
+          errorMessage: 'فشل التحقق الأمني: عدم تطابق رمز الحماية (State Mismatch).',
+        );
+      }
+
+      if (code == null || code.isEmpty || codeVerifier == null || codeVerifier.isEmpty) {
+        return TikTokAuthResult(
+          status: TikTokAuthStatus.failed,
+          usedNativeApp: usedNativeApp,
+          errorMessage: 'لم يتم استلام رمز التفويض أو مفتاح التحقق PKCE من TikTok OpenSDK.',
+        );
+      }
+
+      final Set<String> grantedScopes = (grantedStr != null && grantedStr.isNotEmpty)
+          ? grantedStr
+              .split(',')
+              .map((s) => s.trim())
+              .where((s) => s.isNotEmpty)
+              .toSet()
+          : AppConstants.tiktokDefaultScopes.toSet();
+
+      return TikTokAuthResult(
+        status: TikTokAuthStatus.success,
+        code: code,
+        codeVerifier: codeVerifier,
+        state: responseState ?? _pendingState,
+        redirectUri: redirectUri,
+        grantedScopes: grantedScopes,
+        usedNativeApp: usedNativeApp,
+      );
+    }
+
+    final TikTokAuthStatus mappedStatus;
+    switch (statusStr) {
+      case 'cancelled':
+        mappedStatus = TikTokAuthStatus.cancelled;
+        break;
+      case 'denied':
+        mappedStatus = TikTokAuthStatus.denied;
+        break;
+      case 'unsupported':
+        mappedStatus = TikTokAuthStatus.unsupported;
+        break;
+      default:
+        mappedStatus = TikTokAuthStatus.failed;
+    }
+
+    return TikTokAuthResult(
+      status: mappedStatus,
+      usedNativeApp: usedNativeApp,
+      errorMessage: errorMessage ?? 'تم إلغاء أو رفض عملية تسجيل الدخول من تيك توك.',
+    );
+  }
+
+  /// Defensive fallback if the WebView ever intercepts the HTTPS callback URI directly.
+  bool handleCallbackUri(Uri uri) {
+    if (_pendingCompleter == null || _pendingCompleter!.isCompleted) {
+      return false;
+    }
+    final Map<String, String> params = uri.queryParameters;
+    final String? error = params['error'];
+    final String? errorDesc = params['error_description'];
+    if (error != null) {
+      final bool isCancelled = error == 'user_cancelled' || error == 'access_denied';
+      final Completer<TikTokAuthResult> active = _pendingCompleter!;
+      _cleanup();
+      active.complete(TikTokAuthResult(
+        status: isCancelled ? TikTokAuthStatus.cancelled : TikTokAuthStatus.failed,
+        errorMessage: errorDesc ?? 'تم إلغاء عملية تسجيل الدخول من تيك توك.',
+      ));
+      return true;
+    }
+    return false;
+  }
+
+  /// Cancels any in-flight authorization request.
   void cancel() {
+    _channel.invokeMethod('cancel').catchError((_) {});
     if (_pendingCompleter != null && !_pendingCompleter!.isCompleted) {
       _pendingCompleter!.complete(const TikTokAuthResult(
         status: TikTokAuthStatus.cancelled,
@@ -245,7 +303,6 @@ class TikTokAuthService {
     _authTimeoutTimer = null;
     _pendingCompleter = null;
     _pendingState = null;
-    _pendingCodeVerifier = null;
     _pendingRedirectUri = null;
   }
 }

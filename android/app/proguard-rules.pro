@@ -20,3 +20,7 @@
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;
 }
+
+# TikTok OpenSDK
+-keep class com.tiktok.open.sdk.** { *; }
+-dontwarn com.tiktok.open.sdk.**

@@ -313,10 +313,10 @@ class AppWebViewController with WidgetsBindingObserver {
       return NavigationDecision.prevent;
     }
 
-    // Intercept TikTok OAuth callback redirect
-    final bool isTikTokCallback = (uri.host.contains('pastel-eg.com') &&
-        uri.path.contains('/social-connections/tiktok/callback')) ||
-        (uri.scheme == 'pastel' && uri.host == 'tiktok-auth');
+    // Intercept TikTok OAuth HTTPS App Link / Universal Link callback redirect
+    final bool isTikTokCallback = uri.scheme == 'https' &&
+        uri.host.contains('pastel-eg.com') &&
+        uri.path.contains('/social-connections/tiktok/callback');
 
     if (isTikTokCallback) {
       final handled = TikTokAuthService.instance.handleCallbackUri(uri);

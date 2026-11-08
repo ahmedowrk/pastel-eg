@@ -31,6 +31,10 @@ target 'Runner' do
   use_frameworks!
   use_modular_headers!
 
+  # Official TikTok OpenSDK v2 for iOS (Login Kit)
+  pod 'TikTokOpenSDKCore', '~> 2.5.0'
+  pod 'TikTokOpenAuthSDK', '~> 2.5.0'
+
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
   target 'RunnerTests' do
     inherit! :search_paths

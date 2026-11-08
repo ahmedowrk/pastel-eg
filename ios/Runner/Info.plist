@@ -25,7 +25,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 
-	<!-- URL Schemes for Facebook & TikTok Deep Link Callbacks -->
+	<!-- URL Schemes for Facebook & TikTok OpenAuthSDK Callbacks -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -36,13 +36,17 @@
 		</dict>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.pasteleg.app</string>
+			<string>com.pasteleg.app.tiktok</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>pastel</string>
+				<string>aw68o0783j7z9eeg</string>
 			</array>
 		</dict>
 	</array>
+
+	<!-- TikTok OpenSDK Client Key -->
+	<key>TikTokClientKey</key>
+	<string>aw68o0783j7z9eeg</string>
 
 	<!-- Meta App Credentials -->
 	<key>FacebookAppID</key>

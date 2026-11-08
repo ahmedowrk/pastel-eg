@@ -1,12 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import '../utils/constants.dart';
 import 'facebook_auth_service.dart';
 import 'social_backend_service.dart';
 import 'tiktok_auth_service.dart';
 import 'tiktok_backend_service.dart';
-
 
 /// Secure JavaScript Bridge Service managing bidirectional communication
 /// between the Pastel website (inside WebView) and Flutter Native authentication.
@@ -33,7 +34,7 @@ class SocialBridgeService {
     isAvailable: true,
     version: 1,
 
-    // Initiates social account connection
+    // Initiates social account connection ('facebook' | 'instagram' | 'tiktok')
     connectSocialAccount: function(provider, customRequestId) {
       var reqId = customRequestId || 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
       if (window.PastelNativeChannel) {
@@ -79,21 +80,21 @@ class SocialBridgeService {
 })();
 ''';
 
-  /// Processes messages received from the `PastelNativeChannel` JavaScript Channel.
-    /// Directly starts native Meta login without waiting for a JS message.
-  /// Used when an OAuth navigation attempt is intercepted from the WebView.
-    /// Directly starts native TikTok login without waiting for a JS message.
-  /// Used when an OAuth navigation attempt is intercepted from the WebView.
+  /// Directly starts native TikTok OpenSDK login without waiting for a JS message.
+  /// Used when a TikTok OAuth navigation attempt is intercepted from the WebView.
   Future<void> startDirectTikTokLogin() async {
     final String reqId = 'direct_tiktok_${DateTime.now().millisecondsSinceEpoch}';
     await _handleConnectAction(reqId, 'tiktok');
   }
 
+  /// Directly starts native Meta login without waiting for a JS message.
+  /// Used when a Meta OAuth navigation attempt is intercepted from the WebView.
   Future<void> startDirectFacebookLogin({String provider = 'facebook'}) async {
     final String reqId = 'direct_${DateTime.now().millisecondsSinceEpoch}';
     await _handleConnectAction(reqId, provider);
   }
 
+  /// Processes messages received from the `PastelNativeChannel` JavaScript Channel.
   Future<void> handleJavascriptMessage(
     String rawMessage,
     String? currentUrl,
@@ -125,7 +126,7 @@ class SocialBridgeService {
 
     final int version = data['version'] is int ? data['version'] : 1;
     final String? action = data['action']?.toString();
-    final String? provider = data['provider']?.toString()?.toLowerCase();
+    final String? provider = data['provider']?.toString().toLowerCase();
     final String requestId = data['requestId']?.toString() ?? 'req_${DateTime.now().millisecondsSinceEpoch}';
 
     if (version != 1 || action == null || action.isEmpty) {
@@ -138,21 +139,18 @@ class SocialBridgeService {
       case 'connect_social_account':
         await _handleConnectAction(requestId, provider ?? 'facebook');
         break;
-
       case 'cancel_authorization':
         _handleCancelAction(requestId, provider ?? 'unknown');
         break;
-
       case 'get_connection_status':
         await _handleStatusAction(requestId);
         break;
-
       default:
         _dispatchError(requestId, provider ?? 'unknown', 'unsupported', 'Action "$action" is not supported.');
     }
   }
 
-  /// Handles `connect_social_account` for facebook/instagram
+  /// Handles `connect_social_account` for facebook/instagram/tiktok
   Future<void> _handleConnectAction(String requestId, String provider) async {
     if (provider != 'facebook' && provider != 'instagram' && provider != 'tiktok') {
       _dispatchError(requestId, provider, 'unsupported', 'Provider "$provider" is not supported.');
@@ -200,7 +198,6 @@ class SocialBridgeService {
           default:
             mappedStatus = 'authentication_failed';
         }
-
         _dispatchResult({
           'version': 1,
           'requestId': requestId,
@@ -230,10 +227,8 @@ class SocialBridgeService {
     granted_permissions: $permissionsJson,
     device_platform: 'android'
   });
-
   var primaryUrl = '/provider/automation-settings/provider/social-connections/meta/connect-token';
   var fallbackUrl = '/ar/mobile/social/meta/connect-token';
-
   function sendReq(url, onFail) {
     fetch(url, {
       method: 'POST',
@@ -259,7 +254,6 @@ class SocialBridgeService {
       if (onFail) onFail();
     });
   }
-
   sendReq(primaryUrl, function() {
     sendReq(fallbackUrl, null);
   });
@@ -283,6 +277,7 @@ class SocialBridgeService {
 
       // 4. Dispatch final clean response to WebView without ever returning the access token!
       _dispatchResult(backendResult.toBridgePayload(requestId, provider));
+
       if (backendResult.isSuccess && _webViewController != null) {
         Future.delayed(const Duration(milliseconds: 500), () {
           _webViewController?.reload();
@@ -300,8 +295,158 @@ class SocialBridgeService {
     }
   }
 
+  /// Handles `connect_social_account` for `tiktok` via official native TikTok OpenSDK + PKCE
+  Future<void> _handleTikTokConnectAction(String requestId) async {
+    _activeRequestId = requestId;
+    final Completer<void> completer = Completer<void>();
+    _currentAuthCompleter = completer;
+
+    final Timer timeoutTimer = Timer(const Duration(minutes: 2), () {
+      if (!completer.isCompleted) {
+        completer.complete();
+        TikTokAuthService.instance.cancel();
+        _dispatchError(requestId, 'tiktok', 'timeout', 'انتهت مهلة عملية الربط مع تيك توك.');
+      }
+    });
+
+    try {
+      // 1. Launch Official TikTok OpenSDK (AuthMethod.TikTokApp -> ChromeTab / ASWebAuthenticationSession fallback)
+      final TikTokAuthResult authResult = await TikTokAuthService.instance.authorize();
+
+      if (completer.isCompleted) return;
+
+      if (!authResult.isSuccess) {
+        final String mappedStatus;
+        switch (authResult.status) {
+          case TikTokAuthStatus.cancelled:
+            mappedStatus = 'cancelled';
+            break;
+          case TikTokAuthStatus.denied:
+            mappedStatus = 'permission_denied';
+            break;
+          case TikTokAuthStatus.unsupported:
+            mappedStatus = 'unsupported';
+            break;
+          default:
+            mappedStatus = 'authentication_failed';
+        }
+        _dispatchResult({
+          'version': 1,
+          'requestId': requestId,
+          'provider': 'tiktok',
+          'status': mappedStatus,
+          'errorMessage': authResult.errorMessage ?? 'فشلت عملية المصادقة عبر تيك توك.',
+        });
+        return;
+      }
+
+      final String code = authResult.code!;
+      final String codeVerifier = authResult.codeVerifier!;
+      final String redirectUri = authResult.redirectUri ?? AppConstants.tiktokRedirectUri;
+      final String state = authResult.state ?? '';
+      final List<String> scopesList = authResult.grantedScopes.toList();
+      final String platform = Platform.isIOS ? 'ios' : 'android';
+
+      // 2. Execute authenticated PKCE code exchange inside WebView session (includes HttpOnly wedding-planner-session cookie)
+      if (_webViewController != null) {
+        final String syncJs = '''
+(function() {
+  function getCsrf() {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta && meta.getAttribute('content')) return meta.getAttribute('content');
+    var m = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+  var csrf = getCsrf();
+  var payload = JSON.stringify({
+    provider: 'tiktok',
+    code: ${jsonEncode(code)},
+    code_verifier: ${jsonEncode(codeVerifier)},
+    state: ${jsonEncode(state)},
+    redirect_uri: ${jsonEncode(redirectUri)},
+    granted_scopes: ${jsonEncode(scopesList)},
+    device_platform: ${jsonEncode(platform)}
+  });
+  var urls = [
+    ${jsonEncode(AppConstants.tiktokConnectTokenPath)},
+    ${jsonEncode(AppConstants.tiktokFallbackConnectTokenPath)},
+    ${jsonEncode(AppConstants.tiktokLegacyConnectTokenPath)},
+    ${jsonEncode(AppConstants.tiktokMobileConnectTokenPath)}
+  ];
+  function tryNext(idx) {
+    if (idx >= urls.length) return;
+    fetch(urls[idx], {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-CSRF-TOKEN': csrf,
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: payload,
+      credentials: 'include'
+    }).then(function(res) {
+      if (res.ok) {
+        setTimeout(function() { window.location.reload(); }, 300);
+      } else if (res.status === 404 || res.status === 405) {
+        tryNext(idx + 1);
+      } else {
+        res.json().then(function(d) {
+          console.warn('[PastelNative] TikTok server error:', d);
+        }).catch(function() {});
+      }
+    }).catch(function() {
+      tryNext(idx + 1);
+    });
+  }
+  tryNext(0);
+})();
+''';
+        await _webViewController!.runJavaScript(syncJs);
+      }
+
+      // 3. Parallel direct Dart exchange
+      final String csrfToken = await _extractCsrfTokenFromWebView();
+      final String cookieHeader = await _extractCookiesFromWebView();
+
+      final TikTokBackendConnectResult backendResult =
+          await TikTokBackendService.instance.connectTikTokCode(
+        code: code,
+        codeVerifier: codeVerifier,
+        redirectUri: redirectUri,
+        state: state,
+        grantedScopes: authResult.grantedScopes,
+        csrfToken: csrfToken,
+        cookieHeader: cookieHeader,
+      );
+
+      if (completer.isCompleted) return;
+
+      // 4. Dispatch clean result to WebView without exposing any tokens or secrets
+      _dispatchResult(backendResult.toBridgePayload(requestId));
+
+      if (backendResult.isSuccess && _webViewController != null) {
+        Future.delayed(const Duration(milliseconds: 500), () {
+          _webViewController?.reload();
+        });
+      }
+    } catch (e) {
+      if (!completer.isCompleted) {
+        _dispatchError(requestId, 'tiktok', 'backend_error', 'Internal error: ${e.toString()}');
+      }
+    } finally {
+      timeoutTimer.cancel();
+      if (!completer.isCompleted) completer.complete();
+      _activeRequestId = null;
+      _currentAuthCompleter = null;
+    }
+  }
+
   /// Handles `cancel_authorization`
   void _handleCancelAction(String requestId, String provider) {
+    if (provider == 'tiktok') {
+      TikTokAuthService.instance.cancel();
+    }
     if (_activeRequestId == requestId && _currentAuthCompleter != null && !_currentAuthCompleter!.isCompleted) {
       _currentAuthCompleter!.complete();
       _activeRequestId = null;
@@ -318,7 +463,6 @@ class SocialBridgeService {
 
   /// Handles `get_connection_status`
   Future<void> _handleStatusAction(String requestId) async {
-    // Notify the WebView to query its standard endpoint or return stored status
     _dispatchResult({
       'version': 1,
       'requestId': requestId,
@@ -338,6 +482,9 @@ class SocialBridgeService {
     sanitized.remove('accessToken');
     sanitized.remove('token');
     sanitized.remove('secret');
+    sanitized.remove('code');
+    sanitized.remove('code_verifier');
+    sanitized.remove('codeVerifier');
 
     final String jsonStr = jsonEncode(sanitized);
     final String jsCode = '''

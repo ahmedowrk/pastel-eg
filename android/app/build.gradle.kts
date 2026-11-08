@@ -64,6 +64,10 @@ android {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // Official TikTok OpenSDK v2 for Android (Login Kit)
+    implementation("com.tiktok.open.sdk:tiktok-open-sdk-core:2.4.0")
+    implementation("com.tiktok.open.sdk:tiktok-open-sdk-auth:2.4.0")
+    implementation("androidx.browser:browser:1.8.0")
 }
 
 kotlin {
