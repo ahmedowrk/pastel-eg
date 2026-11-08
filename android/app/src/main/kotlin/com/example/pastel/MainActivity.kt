@@ -1,10 +1,9 @@
 package com.pasteleg.app
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.webkit.CookieManager
 import com.tiktok.open.sdk.auth.AuthApi
 import com.tiktok.open.sdk.auth.AuthRequest
@@ -26,18 +25,21 @@ class MainActivity : FlutterActivity() {
         private const val KEY_VERIFIER = "pending_code_verifier"
         private const val KEY_STATE = "pending_state"
         private const val KEY_REDIRECT_URI = "pending_redirect_uri"
+        private const val KEY_TIMESTAMP = "pending_timestamp_ms"
+        // Maximum validity window for a restored low-memory pending session (5 minutes)
+        private const val MAX_PENDING_AGE_MS = 5 * 60 * 1000L
+        // Request code used by TikTok OpenSDK AuthApi.authorizeNative -> startActivityForResult(intent, 0)
+        private const val TIKTOK_NATIVE_REQUEST_CODE = 0
     }
 
     private lateinit var authApi: AuthApi
     private var methodChannel: MethodChannel? = null
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     // Active PKCE & state session bound to the in-flight native authorization request
     private var pendingResult: MethodChannel.Result? = null
     private var pendingCodeVerifier: String? = null
     private var pendingState: String? = null
     private var pendingRedirectUri: String = DEFAULT_REDIRECT_URI
-    private var hasLeftActivityForAuth: Boolean = false
     private var pendingPostCreationPayload: Map<String, Any?>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,7 +67,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "authorize" -> handleAuthorize(call, result)
                 "cancel" -> {
-                    clearPendingSession()
+                    cancelActivePendingSession()
                     result.success(true)
                 }
                 else -> result.notImplemented()
@@ -87,47 +89,12 @@ class MainActivity : FlutterActivity() {
         outState.putString(KEY_REDIRECT_URI, pendingRedirectUri)
     }
 
-    override fun onPause() {
-        super.onPause()
-        if (pendingResult != null || pendingCodeVerifier != null) {
-            hasLeftActivityForAuth = true
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (hasLeftActivityForAuth && (pendingResult != null || pendingCodeVerifier != null)) {
-            // Delay slightly so onNewIntent (if triggered by a valid TikTok callback) executes first
-            mainHandler.postDelayed({
-                if (hasLeftActivityForAuth && (pendingResult != null || pendingCodeVerifier != null)) {
-                    val activeRes = pendingResult
-                    val usedNativeApp = TikTokAppCheckUtil.isTikTokAppInstalled(this)
-                    clearPendingSession()
-                    val cancelPayload = mapOf(
-                        "status" to "cancelled",
-                        "errorCode" to Constants.BaseError.CANCELLED,
-                        "authError" to "user_cancelled",
-                        "errorMessage" to "تم إلغاء عملية تسجيل الدخول عبر تيك توك.",
-                        "usedNativeApp" to usedNativeApp
-                    )
-                    if (activeRes != null) {
-                        activeRes.success(cancelPayload)
-                    } else {
-                        methodChannel?.invokeMethod("onAuthResponse", cancelPayload)
-                    }
-                }
-            }, 650L)
-        }
-    }
-
     private fun handleAuthorize(call: MethodCall, result: MethodChannel.Result) {
-        if (pendingResult != null) {
-            result.error(
-                "DUPLICATE_REQUEST",
-                "A TikTok authorization request is already in progress.",
-                null
-            )
-            return
+        // If a previous authorization attempt was abandoned (e.g. user closed Custom Tab via Back button),
+        // cleanly complete the stale pendingResult as cancelled and wipe its stored PKCE state
+        // before starting the new authorization request.
+        if (pendingResult != null || pendingCodeVerifier != null) {
+            cancelActivePendingSession()
         }
 
         val clientKey = call.argument<String>("clientKey")?.trim().orEmpty()
@@ -138,10 +105,10 @@ class MainActivity : FlutterActivity() {
         val preferNative = call.argument<Boolean>("preferNative") ?: true
         val language = call.argument<String>("language") ?: "ar"
 
-        if (clientKey.isEmpty() || scope.isEmpty() || redirectUri.isEmpty()) {
+        if (clientKey.isEmpty() || scope.isEmpty() || redirectUri.isEmpty() || state.isEmpty()) {
             result.error(
                 "INVALID_ARGS",
-                "clientKey, scope, and redirectUri are required for TikTok OpenSDK authorization.",
+                "clientKey, scope, redirectUri, and state are required for TikTok OpenSDK authorization.",
                 null
             )
             return
@@ -154,10 +121,9 @@ class MainActivity : FlutterActivity() {
 
         pendingResult = result
         pendingCodeVerifier = codeVerifier
-        pendingState = state.ifEmpty { null }
+        pendingState = state
         pendingRedirectUri = redirectUri
-        hasLeftActivityForAuth = false
-        persistPendingSession(codeVerifier, pendingState, redirectUri)
+        persistPendingSession(codeVerifier, state, redirectUri)
 
         val authRequest = AuthRequest(
             clientKey = clientKey,
@@ -165,7 +131,7 @@ class MainActivity : FlutterActivity() {
             redirectUri = redirectUri,
             codeVerifier = codeVerifier,
             autoAuthDisabled = false,
-            state = pendingState,
+            state = state,
             language = language
         )
 
@@ -200,14 +166,39 @@ class MainActivity : FlutterActivity() {
         handleTikTokAuthIntent(intent)
     }
 
-    private fun handleTikTokAuthIntent(currentIntent: Intent?) {
-        if (currentIntent == null) return
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (pendingCodeVerifier == null && pendingResult == null) return
+
+        // If AwemeAuthorizedActivity returned an Intent with AuthResponse extras via setResult
+        if (data != null && handleTikTokAuthIntent(data)) {
+            return
+        }
+
+        // If native TikTok AwemeAuthorizedActivity (started with requestCode = 0) was backed out of
+        // with RESULT_CANCELED and no redirect Intent data, complete pending session as cancelled.
+        if (requestCode == TIKTOK_NATIVE_REQUEST_CODE &&
+            resultCode == Activity.RESULT_CANCELED &&
+            data == null &&
+            TikTokAppCheckUtil.isTikTokAppInstalled(this)
+        ) {
+            cancelActivePendingSession()
+        }
+    }
+
+    private fun handleTikTokAuthIntent(currentIntent: Intent?): Boolean {
+        if (currentIntent == null) return false
         if (!::authApi.isInitialized) {
             authApi = AuthApi(activity = this)
         }
 
         val response: AuthResponse = authApi.getAuthResponseFromIntent(currentIntent, pendingRedirectUri)
-            ?: return
+            ?: return false
+
+        // Ignore duplicate/stale Intent redeliveries if there is no active pending session
+        if (pendingResult == null && pendingCodeVerifier == null && pendingState == null) {
+            return false
+        }
 
         val activeResult = pendingResult
         val verifier = pendingCodeVerifier
@@ -228,7 +219,7 @@ class MainActivity : FlutterActivity() {
                     "usedNativeApp" to usedNativeApp
                 )
                 dispatchToFlutter(activeResult, payload)
-                return
+                return true
             }
 
             if (verifier.isNullOrEmpty()) {
@@ -240,7 +231,7 @@ class MainActivity : FlutterActivity() {
                     "usedNativeApp" to usedNativeApp
                 )
                 dispatchToFlutter(activeResult, payload)
-                return
+                return true
             }
 
             val payload = mapOf(
@@ -253,6 +244,7 @@ class MainActivity : FlutterActivity() {
                 "usedNativeApp" to usedNativeApp
             )
             dispatchToFlutter(activeResult, payload)
+            return true
         } else {
             val status = when (response.errorCode) {
                 Constants.BaseError.CANCELLED -> "cancelled"
@@ -277,6 +269,24 @@ class MainActivity : FlutterActivity() {
                 "usedNativeApp" to usedNativeApp
             )
             dispatchToFlutter(activeResult, payload)
+            return true
+        }
+    }
+
+    private fun cancelActivePendingSession() {
+        val activeRes = pendingResult
+        val usedNativeApp = TikTokAppCheckUtil.isTikTokAppInstalled(this)
+        clearPendingSession()
+        if (activeRes != null) {
+            activeRes.success(
+                mapOf(
+                    "status" to "cancelled",
+                    "errorCode" to Constants.BaseError.CANCELLED,
+                    "authError" to "user_cancelled",
+                    "errorMessage" to "تم إلغاء عملية تسجيل الدخول عبر تيك توك.",
+                    "usedNativeApp" to usedNativeApp
+                )
+            )
         }
     }
 
@@ -290,16 +300,25 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun persistPendingSession(verifier: String, state: String?, redirectUri: String) {
+    private fun persistPendingSession(verifier: String, state: String, redirectUri: String) {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putString(KEY_VERIFIER, verifier)
             .putString(KEY_STATE, state)
             .putString(KEY_REDIRECT_URI, redirectUri)
+            .putLong(KEY_TIMESTAMP, System.currentTimeMillis())
             .apply()
     }
 
     private fun restorePendingSession(savedInstanceState: Bundle?) {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedTimestamp = prefs.getLong(KEY_TIMESTAMP, 0L)
+        val isExpired = savedTimestamp <= 0L || (System.currentTimeMillis() - savedTimestamp) > MAX_PENDING_AGE_MS
+
+        if (isExpired && savedInstanceState == null) {
+            prefs.edit().clear().apply()
+            return
+        }
+
         pendingCodeVerifier = savedInstanceState?.getString(KEY_VERIFIER)
             ?: prefs.getString(KEY_VERIFIER, null)
         pendingState = savedInstanceState?.getString(KEY_STATE)
@@ -310,11 +329,9 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun clearPendingSession() {
-        mainHandler.removeCallbacksAndMessages(null)
         pendingResult = null
         pendingCodeVerifier = null
         pendingState = null
-        hasLeftActivityForAuth = false
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply()
     }
 }

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import '../utils/constants.dart';
 
@@ -65,7 +64,16 @@ class TikTokAuthService {
   Completer<TikTokAuthResult>? _pendingCompleter;
   String? _pendingState;
   String? _pendingRedirectUri;
+  DateTime? _authStartedAt;
   Timer? _authTimeoutTimer;
+
+  /// Returns true if a request was started less than 1.5 seconds ago (rapid double-tap guard).
+  bool get isRapidDuplicateTap {
+    if (_pendingCompleter == null || _pendingCompleter!.isCompleted || _authStartedAt == null) {
+      return false;
+    }
+    return DateTime.now().difference(_authStartedAt!).inMilliseconds < 1500;
+  }
 
   /// Generates a high-entropy cryptographic anti-CSRF state string.
   String _generateState() {
@@ -118,10 +126,14 @@ class TikTokAuthService {
     bool preferNative = true,
   }) async {
     if (_pendingCompleter != null && !_pendingCompleter!.isCompleted) {
-      return const TikTokAuthResult(
-        status: TikTokAuthStatus.failed,
-        errorMessage: 'هناك عملية تسجيل دخول نشطة حالياً عبر تيك توك.',
-      );
+      if (isRapidDuplicateTap) {
+        return const TikTokAuthResult(
+          status: TikTokAuthStatus.failed,
+          errorMessage: 'هناك عملية تسجيل دخول نشطة حالياً عبر تيك توك.',
+        );
+      }
+      // Supersede previous abandoned request when user returns to the app and taps Connect again
+      cancel();
     }
 
     final String key = clientKey ?? AppConstants.tiktokClientKey;
@@ -131,6 +143,7 @@ class TikTokAuthService {
 
     _pendingState = state;
     _pendingRedirectUri = rUri;
+    _authStartedAt = DateTime.now();
 
     final Completer<TikTokAuthResult> completer = Completer<TikTokAuthResult>();
     _pendingCompleter = completer;
@@ -173,7 +186,7 @@ class TikTokAuthService {
           errorMessage: e.message ?? 'تعذر تشغيل مصادقة تيك توك الأصلية (${e.code}).',
         ));
       }
-    } catch (e) {
+    } catch (_) {
       if (!completer.isCompleted) {
         _cleanup();
         completer.complete(const TikTokAuthResult(
@@ -186,8 +199,8 @@ class TikTokAuthService {
     return completer.future;
   }
 
-  /// Handles asynchronous `onAuthResponse` events dispatched from `MainActivity.onNewIntent`
-  /// if the activity was recreated while backgrounded.
+  /// Handles asynchronous `onAuthResponse` events dispatched from `MainActivity`
+  /// if the activity was recreated by the OS while backgrounded.
   Future<dynamic> _handleNativeMethodCall(MethodCall call) async {
     if (call.method == 'onAuthResponse' && call.arguments is Map) {
       if (_pendingCompleter != null && !_pendingCompleter!.isCompleted) {
@@ -274,8 +287,7 @@ class TikTokAuthService {
     );
   }
 
-  /// Defensive fallback if the WebView ever intercepts the HTTPS callback URI directly
-  /// (e.g., if Android App Link assetlinks.json is not yet deployed on pastel-eg.com).
+  /// Defensive fallback if the WebView ever intercepts the HTTPS callback URI directly.
   bool handleCallbackUri(Uri uri) {
     if (_pendingCompleter == null || _pendingCompleter!.isCompleted) {
       return false;
@@ -314,5 +326,6 @@ class TikTokAuthService {
     _pendingCompleter = null;
     _pendingState = null;
     _pendingRedirectUri = null;
+    _authStartedAt = null;
   }
 }

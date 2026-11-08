@@ -2,7 +2,7 @@
 
 **Canonical Endpoint**: `POST /ar/mobile/social/tiktok/connect-token`  
 **Target Host**: `https://pastel-eg.com`  
-**Authentication**: Active Provider Session Cookie (`laravel_session` / `wedding-planner-session`) + `X-CSRF-TOKEN`
+**Authentication**: Active Provider Session Cookie (`laravel_session` / `wedding-planner-session`) + `X-CSRF-TOKEN` / `X-XSRF-TOKEN`
 
 ---
 
@@ -18,7 +18,24 @@
 
 ---
 
-## 2. Exact Request Schema
+## 2. OAuth `state`, PKCE, and Security Responsibilities
+
+### A. Client-Generated `state` vs Server-Side Replay Protection
+Because the mobile app launches the native TikTok OpenSDK directly on the device (without an initial server round-trip to pre-register `state` in the Laravel session):
+1. **Mobile Client (`TikTokAuthService` + Native OpenSDK)**:
+   - Generates a 24-byte cryptographically random `state` (`Random.secure()`) before invoking the native SDK.
+   - Verifies that the callback `state` returned by TikTok equals the pending request's `state` at both the native layer (`MainActivity.kt` / `AppDelegate.swift`) and the Dart layer (`TikTokAuthService._parseNativeResponse`), then immediately wipes the pending state to prevent client-side replay.
+2. **Laravel Backend (`TikTokConnectController`)**:
+   - Does **not** compare `state` against a pre-stored session value (since the flow was initiated natively on the client).
+   - Instead, Laravel enforces:
+     1. Non-empty format validation on `state` (`required|string|min:8|max:128`).
+     2. **Atomic Server-Side Replay Lock**: Uses `Cache::add('tiktok_oauth_state_' . hash('sha256', $validated['state']), $user->id, now()->addMinutes(15))` so that the same `state` value can never be submitted more than once.
+     3. **Cryptographic Request-to-Token Binding via PKCE**: Forwards `code` and `code_verifier` to TikTok's `https://open.tiktokapis.com/v2/oauth/token/` endpoint, which verifies `SHA256_HEX(code_verifier) == code_challenge`.
+     4. **Server-Verified Account Identity & Scopes**: Ignores client-provided `granted_scopes` for authorization decisions; verifies granted scopes from TikTok's `/v2/oauth/token/` response (`scope`) and fetches account identity (`open_id`, `display_name`, `avatar_url`) directly from `https://open.tiktokapis.com/v2/user/info/`.
+
+---
+
+## 3. Exact Request Schema
 
 ### Headers
 ```http
@@ -27,8 +44,9 @@ Host: pastel-eg.com
 Content-Type: application/json
 Accept: application/json
 X-Requested-With: XMLHttpRequest
-X-CSRF-TOKEN: <csrf_token_from_meta_or_xsrf_cookie>
-Cookie: <authenticated_webview_session_cookies>
+X-CSRF-TOKEN: <plain_text_csrf_token_from_meta_tag_if_present>
+X-XSRF-TOKEN: <url_decoded_encrypted_xsrf_token_cookie_if_present>
+Cookie: <authenticated_webview_session_cookies_including_HttpOnly>
 ```
 
 ### Request JSON Body
@@ -48,9 +66,9 @@ Cookie: <authenticated_webview_session_cookies>
 
 ---
 
-## 3. Exact Success Response Schema (`200 OK`)
+## 4. Exact Success Response Schema (`200 OK`)
 
-`TikTokBackendService.parseSuccessResponse` strictly validates all mandatory fields below and will reject any response missing `connection_id`, `connected_account.open_id`, or `connected_account.display_name`:
+`TikTokBackendService.parseSuccessResponse` strictly validates all mandatory fields below and rejects any response missing `connection_id`, `connected_account.open_id`, or `connected_account.display_name`:
 
 ```json
 {
@@ -69,19 +87,9 @@ Cookie: <authenticated_webview_session_cookies>
 }
 ```
 
-### Mandatory Fields Checked by Flutter:
-- `status`: Must equal `"success"`.
-- `provider`: Must equal `"tiktok"`.
-- `connection_id`: Non-empty string identifier of the stored social connection record.
-- `connected_account.open_id`: Non-empty string verified from TikTok `/v2/user/info/`.
-- `connected_account.display_name`: Non-empty string verified from TikTok `/v2/user/info/`.
-- `connected_account.avatar_url`: Optional string URL.
-
 ---
 
-## 4. Exact Error Response Schema
-
-Flutter inspects the explicit `code` field rather than assuming every `422` is a permission error:
+## 5. Exact Error Response Schema
 
 ```json
 {
@@ -94,21 +102,8 @@ Flutter inspects the explicit `code` field rather than assuming every `422` is a
 ### Standard Error Codes (`code`):
 | HTTP Status | `code` | Mapped Flutter Bridge Status | Meaning |
 |---|---|---|---|
-| `401` / `403` | `UNAUTHENTICATED` | `authentication_failed` | Merchant session expired or invalid CSRF token |
-| `422` | `INVALID_GRANT` | `authentication_failed` | Authorization `code` expired, already used, or `code_verifier` mismatch |
+| `401` / `403` / `419` | `UNAUTHENTICATED` | `authentication_failed` | Merchant session expired or invalid CSRF token |
+| `422` | `INVALID_GRANT` | `authentication_failed` | Authorization `code` expired, replayed `state`, or `code_verifier` mismatch |
 | `422` | `MISSING_PERMISSIONS` | `permission_denied` | Required scope (`user.info.basic`) was not granted |
 | `409` | `ACCOUNT_ALREADY_LINKED` | `account_already_linked` | This TikTok `open_id` is already linked to another merchant account |
 | `500` / `502` | `BACKEND_ERROR` | `backend_error` | Unexpected server or upstream TikTok API failure |
-
----
-
-## 5. Server-to-Server TikTok API Exchange Steps
-
-1. **Validate `redirect_uri`**: Must match `https://pastel-eg.com/social-connections/tiktok/callback`.
-2. **Exchange Code + Verifier**:
-   - `POST https://open.tiktokapis.com/v2/oauth/token/` (`application/x-www-form-urlencoded`)
-   - Fields: `client_key`, `client_secret`, `code`, `grant_type=authorization_code`, `redirect_uri`, `code_verifier`.
-3. **Verify Required Scopes**: Ensure `user.info.basic` is present in the token's granted `scope`; if missing, return `422` with `code: "MISSING_PERMISSIONS"`.
-4. **Fetch Verified Account Identity**:
-   - `GET https://open.tiktokapis.com/v2/user/info/?fields=open_id,union_id,avatar_url,display_name` with header `Authorization: Bearer {access_token}`.
-5. **Persist & Return**: Store encrypted tokens linked to `auth()->id()` and return the Section 3 JSON response without ever returning `access_token` or `refresh_token`.

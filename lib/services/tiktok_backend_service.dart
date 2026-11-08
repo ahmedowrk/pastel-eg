@@ -70,6 +70,27 @@ class TikTokBackendService {
   TikTokBackendService._internal();
   static final TikTokBackendService instance = TikTokBackendService._internal();
 
+  /// Extracts the URL-decoded `XSRF-TOKEN` cookie value from a raw Cookie header string.
+  /// In Laravel's `VerifyCsrfToken` middleware:
+  /// - `X-CSRF-TOKEN` must contain the unencrypted session token from `<meta name="csrf-token">`.
+  /// - `X-XSRF-TOKEN` must contain the URL-decoded encrypted `XSRF-TOKEN` cookie value.
+  static String extractXsrfTokenFromCookies(String cookieHeader) {
+    if (cookieHeader.isEmpty) return '';
+    final List<String> parts = cookieHeader.split(';');
+    for (final String part in parts) {
+      final String trimmed = part.trim();
+      if (trimmed.startsWith('XSRF-TOKEN=')) {
+        final String rawVal = trimmed.substring('XSRF-TOKEN='.length);
+        try {
+          return Uri.decodeComponent(rawVal);
+        } catch (_) {
+          return rawVal;
+        }
+      }
+    }
+    return '';
+  }
+
   /// Submits the TikTok `code` and `codeVerifier` to the canonical authenticated Laravel endpoint:
   /// `POST /ar/mobile/social/tiktok/connect-token`
   Future<TikTokBackendConnectResult> connectTikTokCode({
@@ -97,11 +118,14 @@ class TikTokBackendService {
       'device_platform': platform,
     };
 
+    final String xsrfCookieToken = extractXsrfTokenFromCookies(cookieHeader);
+
     final Map<String, String> headers = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
       'X-Requested-With': 'XMLHttpRequest',
       if (csrfToken.isNotEmpty) 'X-CSRF-TOKEN': csrfToken,
+      if (xsrfCookieToken.isNotEmpty) 'X-XSRF-TOKEN': xsrfCookieToken,
       if (cookieHeader.isNotEmpty) 'Cookie': cookieHeader,
     };
 
@@ -141,19 +165,7 @@ class TikTokBackendService {
     }
   }
 
-  /// Validates the exact documented Laravel success response schema:
-  /// ```json
-  /// {
-  ///   "status": "success",
-  ///   "connection_id": "tiktok_conn_123",
-  ///   "provider": "tiktok",
-  ///   "connected_account": {
-  ///     "open_id": "_000...",
-  ///     "display_name": "Pastel Studio",
-  ///     "avatar_url": "https://..."
-  ///   }
-  /// }
-  /// ```
+  /// Validates the exact documented Laravel success response schema.
   /// Never fabricates connection IDs or account identity when mandatory fields are missing.
   TikTokBackendConnectResult parseSuccessResponse(String responseBody) {
     try {
@@ -279,7 +291,7 @@ class TikTokBackendService {
       case 'ACCOUNT_ALREADY_LINKED':
         return 'account_already_linked';
       default:
-        if (httpStatus == 401 || httpStatus == 403) {
+        if (httpStatus == 401 || httpStatus == 403 || httpStatus == 419) {
           return 'authentication_failed';
         }
         if (httpStatus == 409) {

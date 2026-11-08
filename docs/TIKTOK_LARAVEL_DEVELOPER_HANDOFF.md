@@ -29,6 +29,7 @@ TIKTOK_REDIRECT_URI=https://pastel-eg.com/social-connections/tiktok/callback
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
@@ -65,6 +66,16 @@ class TikTokConnectController extends Controller
                 'status'  => 'error',
                 'code'    => 'INVALID_GRANT',
                 'message' => 'رابط إعادة التوجيه (redirect_uri) غير معتمد.',
+            ], 422);
+        }
+
+        // حماية ضد إعادة إرسال نفس الطلب (Server-side Replay Protection)
+        $stateLockKey = 'tiktok_oauth_state_' . hash('sha256', $validated['state']);
+        if (!Cache::add($stateLockKey, $user->id, now()->addMinutes(15))) {
+            return response()->json([
+                'status'  => 'error',
+                'code'    => 'INVALID_GRANT',
+                'message' => 'تم استخدام رمز التحقق (state) مسبقاً.',
             ], 422);
         }
 
@@ -105,7 +116,7 @@ class TikTokConnectController extends Controller
                 ], 422);
             }
 
-            // 2. التحقق من منح الصلاحية الأساسية user.info.basic
+            // 2. التحقق من منح الصلاحية الأساسية user.info.basic من استجابة TikTok مباشرة
             $grantedScopes = array_values(array_filter(array_map('trim', explode(',', $scopeStr))));
             if (!in_array('user.info.basic', $grantedScopes, true)) {
                 return response()->json([
@@ -200,17 +211,4 @@ class TikTokConnectController extends Controller
         }
     }
 }
-```
-
----
-
-## 3. تسجيل المسار في `routes/web.php`
-
-```php
-use App\Http\Controllers\TikTokConnectController;
-
-Route::middleware(['web', 'auth'])->group(function () {
-    Route::post('/ar/mobile/social/tiktok/connect-token', [TikTokConnectController::class, 'connectToken'])
-         ->name('social.mobile.tiktok.connect-token');
-});
 ```

@@ -55,7 +55,7 @@ class SocialBridgeService {
         window.PastelNativeChannel.postMessage(JSON.stringify({
           version: 1,
           action: 'cancel_authorization',
-          requestId: requestId
+          requestId: reqId
         }));
       }
     },
@@ -156,14 +156,25 @@ class SocialBridgeService {
       return;
     }
 
-    // Duplicate request prevention: reject if another auth flow is active
-    if (_currentAuthCompleter != null && !_currentAuthCompleter!.isCompleted) {
-      _dispatchError(requestId, provider, 'duplicate_request', 'An authorization request is already in progress.');
+    if (provider == 'tiktok') {
+      if (_currentAuthCompleter != null && !_currentAuthCompleter!.isCompleted) {
+        if (TikTokAuthService.instance.isRapidDuplicateTap) {
+          _dispatchError(requestId, provider, 'duplicate_request', 'An authorization request is already in progress.');
+          return;
+        }
+        // User returned to the app after abandoning a previous external session and tapped Connect again
+        TikTokAuthService.instance.cancel();
+        _currentAuthCompleter!.complete();
+        _currentAuthCompleter = null;
+        _activeRequestId = null;
+      }
+      await _handleTikTokConnectAction(requestId);
       return;
     }
 
-    if (provider == 'tiktok') {
-      await _handleTikTokConnectAction(requestId);
+    // Duplicate request prevention for facebook/instagram
+    if (_currentAuthCompleter != null && !_currentAuthCompleter!.isCompleted) {
+      _dispatchError(requestId, provider, 'duplicate_request', 'An authorization request is already in progress.');
       return;
     }
 
@@ -348,11 +359,16 @@ class SocialBridgeService {
       final String redirectUri = authResult.redirectUri ?? AppConstants.tiktokRedirectUri;
       final String state = authResult.state ?? '';
 
-      // 2. Obtain CSRF token and full authenticated session cookies (including HttpOnly cookies)
-      final String csrfToken = await _extractCsrfTokenFromWebView();
-      String cookieHeader = await TikTokAuthService.instance.getCookiesForUrl(
-        AppConstants.defaultWebsiteUrl,
-      );
+      // 2. Obtain plain-text meta CSRF token and full authenticated session cookies (including HttpOnly cookies)
+      final String metaCsrfToken = await _extractMetaCsrfTokenFromWebView();
+      final String activeWebViewUrl =
+          (await _webViewController?.currentUrl()) ?? AppConstants.defaultWebsiteUrl;
+      String cookieHeader = await TikTokAuthService.instance.getCookiesForUrl(activeWebViewUrl);
+      if (cookieHeader.isEmpty) {
+        cookieHeader = await TikTokAuthService.instance.getCookiesForUrl(
+          AppConstants.defaultWebsiteUrl,
+        );
+      }
       if (cookieHeader.isEmpty) {
         cookieHeader = await _extractCookiesFromWebView();
       }
@@ -365,7 +381,7 @@ class SocialBridgeService {
         redirectUri: redirectUri,
         state: state,
         grantedScopes: authResult.grantedScopes,
-        csrfToken: csrfToken,
+        csrfToken: metaCsrfToken,
         cookieHeader: cookieHeader,
       );
 
@@ -466,6 +482,24 @@ class SocialBridgeService {
       'status': status,
       'errorMessage': message,
     });
+  }
+
+  /// Extracts ONLY the plain-text `<meta name="csrf-token">` value for the `X-CSRF-TOKEN` header.
+  /// (The encrypted `XSRF-TOKEN` cookie is extracted separately and sent via `X-XSRF-TOKEN`).
+  Future<String> _extractMetaCsrfTokenFromWebView() async {
+    if (_webViewController == null) return '';
+    try {
+      final res = await _webViewController!.runJavaScriptReturningResult('''
+(function() {
+  var meta = document.querySelector('meta[name="csrf-token"]');
+  if (meta && meta.getAttribute('content')) return meta.getAttribute('content');
+  return '';
+})()
+''');
+      return res.toString().replaceAll('"', '').trim();
+    } catch (_) {
+      return '';
+    }
   }
 
   Future<String> _extractCsrfTokenFromWebView() async {
