@@ -91,10 +91,11 @@
         <!-- Allow querying the Facebook app so it appears in the share/open chooser -->
         <package android:name="com.facebook.katana" />
         <package android:name="com.facebook.lite" />
-        <!-- Allow querying the TikTok app so native authorization can be initiated -->
+        <!-- Allow querying all official TikTok Android packages so native authorization can be initiated -->
         <package android:name="com.zhiliaoapp.musically" />
         <package android:name="com.ss.android.ugc.trill" />
-        <!-- Allow Custom Chrome Tabs fallback for TikTok OpenSDK AuthMethod.ChromeTab -->
+        <package android:name="com.zhiliaoapp.musically.go" />
+        <!-- Allow Custom Chrome Tabs fallback service discovery -->
         <intent>
             <action android:name="android.support.customtabs.action.CustomTabsService" />
         </intent>

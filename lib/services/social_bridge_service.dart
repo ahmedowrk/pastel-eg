@@ -473,16 +473,41 @@ class SocialBridgeService {
     sanitized.remove('codeVerifier');
 
     final String jsonStr = jsonEncode(sanitized);
+    debugPrint('[SocialBridgeService] Dispatching result: $jsonStr');
     final String jsCode = '''
 (function() {
+  var payload = $jsonStr;
+  var handledByPage = false;
   if (typeof window.onSocialConnectionResult === 'function') {
     try {
-      window.onSocialConnectionResult($jsonStr);
+      window.onSocialConnectionResult(payload);
+      handledByPage = true;
     } catch(e) {
       console.error('[PastelNative] Error in onSocialConnectionResult handler:', e);
     }
   }
-  window.dispatchEvent(new CustomEvent('PastelSocialConnectionResult', { detail: $jsonStr }));
+  window.dispatchEvent(new CustomEvent('PastelSocialConnectionResult', { detail: payload }));
+  if (!handledByPage && payload && payload.status !== 'duplicate_request') {
+    var msg = payload.errorMessage || payload.message || '';
+    var isSuccess = payload.status === 'success';
+    if (msg) {
+      if (typeof window.showAutomationToast === 'function') {
+        try { window.showAutomationToast(msg, isSuccess ? 'success' : 'error'); return; } catch (_) {}
+      }
+      var banner = document.getElementById('pastel-native-auth-toast');
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'pastel-native-auth-toast';
+        banner.style.cssText = 'position:fixed;top:16px;left:16px;right:16px;z-index:999999;padding:14px 16px;border-radius:10px;font-family:Cairo,sans-serif;font-size:14px;font-weight:700;direction:rtl;text-align:right;box-shadow:0 10px 25px rgba(0,0,0,0.2);';
+        document.body.appendChild(banner);
+      }
+      banner.style.background = isSuccess ? '#dcfce7' : '#fee2e2';
+      banner.style.color = isSuccess ? '#166534' : '#991b1b';
+      banner.style.border = isSuccess ? '1px solid #86efac' : '1px solid #fca5a5';
+      banner.textContent = msg;
+      setTimeout(function() { if (banner && banner.parentNode) banner.parentNode.removeChild(banner); }, 7000);
+    }
+  }
 })();
 ''';
 
