@@ -40,40 +40,50 @@ class FacebookAuthResult {
 /// - Native Facebook App Single Sign-On (SSO)
 /// - System browser fallback (when Facebook App is not installed)
 /// - Business permissions required by Pastel (`pages_*`, `instagram_*`)
-/// - Granular granted vs declined permission verification
+/// - Explicit declined-permission verification while deferring final Page/IG
+///   granular_scopes validation to the Laravel backend.
 class FacebookAuthService {
   FacebookAuthService._internal();
   static final FacebookAuthService instance = FacebookAuthService._internal();
 
   /// Exact verified business permissions requested by Pastel Laravel backend
+  /// (/provider/automation-settings/provider/social-connections/meta/connect)
   /// for Facebook Page and Instagram Professional Account connection:
   static const List<String> requiredPermissions = [
     'public_profile',
-    'email',
     'pages_show_list',
     'pages_read_engagement',
-    'pages_manage_posts',
     'pages_manage_metadata',
-    'pages_messaging',
+    'pages_manage_posts',
     'publish_video',
+    'pages_messaging',
     'instagram_basic',
-    'instagram_manage_messages',
     'instagram_content_publish',
+    'instagram_manage_messages',
   ];
+
+  /// Core business scopes that must not be explicitly declined on the client.
+  static const Set<String> _criticalBusinessPermissions = {
+    'pages_show_list',
+    'pages_read_engagement',
+    'pages_manage_metadata',
+    'pages_manage_posts',
+    'pages_messaging',
+    'instagram_basic',
+    'instagram_content_publish',
+    'instagram_manage_messages',
+  };
 
   /// Initiates native login flow.
   ///
-  /// Supports:
-  /// - Native Facebook App SSO
-  /// - System browser fallback (Custom Tabs / ASWebAuthenticationSession)
-  /// - Facebook Login for Business `config_id` if configured in Meta Dashboard
+  /// Note: Acquiring an AccessToken here only completes client-side OAuth.
+  /// Final connection status and Page/Instagram asset binding are only
+  /// confirmed after Laravel validates the token via `/ar/mobile/social/meta/connect-token`.
   Future<FacebookAuthResult> login({
     List<String> permissions = requiredPermissions,
     String? configId,
   }) async {
     try {
-      // Trigger login through flutter_facebook_auth
-      // If configId is provided, Meta Business Login Configuration is applied
       final LoginResult result = await FacebookAuth.instance.login(
         permissions: permissions,
         loginBehavior: LoginBehavior.nativeWithFallback,
@@ -92,19 +102,23 @@ class FacebookAuthService {
           final Set<String> granted = token.grantedPermissions?.toSet() ?? {};
           final Set<String> declined = token.declinedPermissions?.toSet() ?? {};
 
-          // Verify whether essential page permissions were granted
-          final bool hasCorePagePermission = granted.contains('pages_show_list') ||
-              granted.contains('pages_manage_posts') ||
-              granted.contains('pages_messaging');
-
-          if (declined.contains('pages_show_list') || (!hasCorePagePermission && granted.isNotEmpty)) {
+          // Reject if any critical Page/Instagram permission was explicitly declined.
+          // Do NOT reject merely because `granted` omits business scopes: in
+          // Facebook Login for Business (facebook_login_for_business_uat),
+          // native Android Katana SSO often returns only top-level user scopes
+          // in `AccessToken.getPermissions()` while storing Page/Instagram
+          // scopes in server-side `granular_scopes` verified by Laravel.
+          final Set<String> declinedCritical =
+              declined.intersection(_criticalBusinessPermissions);
+          if (declinedCritical.isNotEmpty) {
             return FacebookAuthResult(
               status: FacebookAuthStatus.permissionDenied,
               accessToken: null,
               userId: token.userId,
               grantedPermissions: granted,
               declinedPermissions: declined,
-              errorMessage: 'لم يتم منح صلاحيات إدارة الصفحات المطلوبة (pages_show_list).',
+              errorMessage:
+                  'لم يتم منح الصلاحيات المطلوبة لربط الصفحة وحساب إنستغرام (${declinedCritical.join(', ')}).',
             );
           }
 
