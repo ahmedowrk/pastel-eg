@@ -97,10 +97,19 @@ class YouTubeAuthService {
   bool get isAuthInProgress => _isAuthInProgress;
   YouTubeAuthSession? get lastAuthorizedSession => _lastAuthorizedSession;
 
+  static void _log(String message) {
+    debugPrint('[YouTubeOAuthDebug][Flutter-AuthService] $message');
+  }
+
   Future<YouTubeAccountSelectionResult> pickDeviceGoogleAccount({
     String serverClientId = kPastelYouTubeWebClientId,
     bool switchAccount = false,
   }) async {
+    _log(
+      '[Stage 1] pickDeviceGoogleAccount called | '
+      'switchAccount=$switchAccount, '
+      'hasServerClientId=${serverClientId.trim().isNotEmpty}',
+    );
     if (switchAccount) {
       await _authPlatform.clearSelectedAccountSession(
         accountEmail: _lastAuthorizedSession?.selectedEmail,
@@ -108,11 +117,19 @@ class YouTubeAuthService {
       _lastAuthorizedSession = null;
     }
 
-    return _authPlatform.pickGoogleAccount(
+    final result = await _authPlatform.pickGoogleAccount(
       serverClientId: serverClientId,
       filterByAuthorizedAccounts: false,
       forceAccountSelection: true,
     );
+    _log(
+      '[Stage 2/7] pickDeviceGoogleAccount finished | '
+      'status=${result.status.name}, '
+      'isSelected=${result.isSelected}, '
+      'selectionSource=${result.selectionSource}, '
+      'errorCode=${result.errorCode}',
+    );
+    return result;
   }
 
   Future<YouTubeAuthSession> authorizeYouTubeForAccount({
@@ -121,7 +138,15 @@ class YouTubeAuthService {
     List<String> requestedScopes = kRequiredYouTubeScopes,
   }) async {
     final chosenEmail = selectedAccount.email?.trim() ?? '';
+    _log(
+      '[Stage 3] authorizeYouTubeForAccount called | '
+      'isSelected=${selectedAccount.isSelected}, '
+      'hasChosenEmail=${chosenEmail.isNotEmpty}, '
+      'selectionSource=${selectedAccount.selectionSource}, '
+      'requestedScopes=${requestedScopes.join(",")}',
+    );
     if (!selectedAccount.isSelected || chosenEmail.isEmpty) {
+      _log('[Stage 7] authorizeYouTubeForAccount aborted: missing_selected_account');
       return const YouTubeAuthSession(
         outcome: YouTubeAuthFlowOutcome.error,
         errorCode: 'missing_selected_account',
@@ -137,6 +162,11 @@ class YouTubeAuthService {
     );
 
     if (authResult.isCancelled) {
+      _log(
+        '[Stage 7] authorizeYouTubeForAccount -> cancelledPermissionConsent | '
+        'errorCode=${authResult.errorCode}, '
+        'errorMessage=${authResult.errorMessage}',
+      );
       return YouTubeAuthSession(
         outcome: YouTubeAuthFlowOutcome.cancelledPermissionConsent,
         selectedEmail: chosenEmail,
@@ -149,6 +179,11 @@ class YouTubeAuthService {
     }
 
     if (authResult.isDenied) {
+      _log(
+        '[Stage 7] authorizeYouTubeForAccount -> permissionDenied | '
+        'errorCode=${authResult.errorCode}, '
+        'errorMessage=${authResult.errorMessage}',
+      );
       return YouTubeAuthSession(
         outcome: YouTubeAuthFlowOutcome.permissionDenied,
         selectedEmail: chosenEmail,
@@ -161,6 +196,12 @@ class YouTubeAuthService {
     }
 
     if (!authResult.isAuthorized) {
+      _log(
+        '[Stage 7] authorizeYouTubeForAccount -> error (not authorized) | '
+        'status=${authResult.status.name}, '
+        'errorCode=${authResult.errorCode}, '
+        'errorMessage=${authResult.errorMessage}',
+      );
       return YouTubeAuthSession(
         outcome: YouTubeAuthFlowOutcome.error,
         selectedEmail: chosenEmail,
@@ -176,6 +217,10 @@ class YouTubeAuthService {
     if (returnedEmail != null &&
         returnedEmail.isNotEmpty &&
         returnedEmail.toLowerCase() != chosenEmail.toLowerCase()) {
+      _log(
+        '[Stage 7] authorizeYouTubeForAccount -> accountMismatchError | '
+        'emailsMatched=false',
+      );
       return YouTubeAuthSession(
         outcome: YouTubeAuthFlowOutcome.accountMismatchError,
         selectedEmail: chosenEmail,
@@ -187,6 +232,10 @@ class YouTubeAuthService {
 
     if (authResult.grantedScopes.isNotEmpty &&
         !_hasRequiredYouTubeScopes(authResult.grantedScopes, requestedScopes)) {
+      _log(
+        '[Stage 7] authorizeYouTubeForAccount -> insufficient_scopes | '
+        'grantedScopes=${authResult.grantedScopes.join(",")}',
+      );
       return YouTubeAuthSession(
         outcome: YouTubeAuthFlowOutcome.permissionDenied,
         selectedEmail: chosenEmail,
@@ -217,6 +266,12 @@ class YouTubeAuthService {
     );
 
     _lastAuthorizedSession = session;
+    _log(
+      '[Stage 7] authorizeYouTubeForAccount -> authorized SUCCESS | '
+      'hasAccessToken=${session.accessToken != null && session.accessToken!.isNotEmpty}, '
+      'hasServerAuthCode=${session.serverAuthCode != null && session.serverAuthCode!.isNotEmpty}, '
+      'grantedScopes=${session.grantedScopes.join(",")}',
+    );
     return session;
   }
 
@@ -226,7 +281,12 @@ class YouTubeAuthService {
     bool switchAccount = false,
     ValueChanged<String>? onStepChanged,
   }) async {
+    _log(
+      '[Flow] authenticateAndAuthorize START | '
+      'switchAccount=$switchAccount, isAuthInProgress=$_isAuthInProgress',
+    );
     if (_isAuthInProgress) {
+      _log('[Flow] authenticateAndAuthorize blocked: auth_in_progress');
       return const YouTubeAuthSession(
         outcome: YouTubeAuthFlowOutcome.error,
         errorCode: 'auth_in_progress',
@@ -243,6 +303,10 @@ class YouTubeAuthService {
       );
 
       if (selection.isCancelled) {
+        _log(
+          '[Stage 7] authenticateAndAuthorize ended: cancelledAccountSelection | '
+          'errorCode=${selection.errorCode}',
+        );
         return YouTubeAuthSession(
           outcome: YouTubeAuthFlowOutcome.cancelledAccountSelection,
           errorCode: selection.errorCode ?? 'cancelled_account_selection',
@@ -253,6 +317,10 @@ class YouTubeAuthService {
 
       if (selection.status ==
           YouTubeAccountSelectionStatus.noAccountsOnDevice) {
+        _log(
+          '[Stage 7] authenticateAndAuthorize ended: noGoogleAccountsOnDevice | '
+          'errorCode=${selection.errorCode}',
+        );
         return YouTubeAuthSession(
           outcome: YouTubeAuthFlowOutcome.noGoogleAccountsOnDevice,
           errorCode: selection.errorCode ?? 'no_google_accounts',
@@ -262,6 +330,10 @@ class YouTubeAuthService {
       }
 
       if (!selection.isSelected) {
+        _log(
+          '[Stage 7] authenticateAndAuthorize ended: account_selection_failed | '
+          'status=${selection.status.name}, errorCode=${selection.errorCode}',
+        );
         return YouTubeAuthSession(
           outcome: YouTubeAuthFlowOutcome.error,
           errorCode: selection.errorCode ?? 'account_selection_failed',
@@ -278,6 +350,7 @@ class YouTubeAuthService {
       );
     } finally {
       _isAuthInProgress = false;
+      _log('[Flow] authenticateAndAuthorize FINISHED (isAuthInProgress=false)');
     }
   }
 

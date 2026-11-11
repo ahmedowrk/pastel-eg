@@ -223,12 +223,22 @@ class MethodChannelYouTubeAuthPlatform extends YouTubeAuthPlatform {
     'com.pasteleg.app/youtube_auth',
   );
 
+  static void _log(String message) {
+    debugPrint('[YouTubeOAuthDebug][Flutter-Platform] $message');
+  }
+
   @override
   Future<YouTubeAccountSelectionResult> pickGoogleAccount({
     required String serverClientId,
     bool filterByAuthorizedAccounts = false,
     bool forceAccountSelection = true,
   }) async {
+    _log(
+      '[Stage 1] Invoking MethodChannel pickGoogleAccount | '
+      'filterByAuthorizedAccounts=$filterByAuthorizedAccounts, '
+      'forceAccountSelection=$forceAccountSelection, '
+      'hasServerClientId=${serverClientId.trim().isNotEmpty}',
+    );
     try {
       final result = await _channel.invokeMapMethod<dynamic, dynamic>(
         'pickGoogleAccount',
@@ -239,14 +249,30 @@ class MethodChannelYouTubeAuthPlatform extends YouTubeAuthPlatform {
         },
       );
       if (result == null) {
+        _log('[Stage 7] pickGoogleAccount received NULL map from MethodChannel');
         return const YouTubeAccountSelectionResult(
           status: YouTubeAccountSelectionStatus.error,
           errorCode: 'null_platform_response',
           errorMessage: 'لم يتم استلام استجابة من نظام اختيار حسابات Google.',
         );
       }
-      return YouTubeAccountSelectionResult.fromMap(result);
-    } on PlatformException catch (e) {
+      final parsed = YouTubeAccountSelectionResult.fromMap(result);
+      _log(
+        '[Stage 7] pickGoogleAccount response parsed | '
+        'status=${parsed.status.name}, '
+        'isSelected=${parsed.isSelected}, '
+        'selectionSource=${parsed.selectionSource}, '
+        'hasEmail=${parsed.email != null && parsed.email!.isNotEmpty}, '
+        'hasIdToken=${parsed.idToken != null && parsed.idToken!.isNotEmpty}, '
+        'errorCode=${parsed.errorCode}, '
+        'errorMessage=${parsed.errorMessage}',
+      );
+      return parsed;
+    } on PlatformException catch (e, st) {
+      _log(
+        '[Stage 5/7] pickGoogleAccount PlatformException | '
+        'code=${e.code}, message=${e.message}, details=${e.details}\n$st',
+      );
       if (e.code == 'cancelled' || e.code == 'USER_CANCELLED') {
         return YouTubeAccountSelectionResult(
           status: YouTubeAccountSelectionStatus.cancelled,
@@ -267,7 +293,11 @@ class MethodChannelYouTubeAuthPlatform extends YouTubeAuthPlatform {
         errorCode: e.code,
         errorMessage: e.message ?? 'تعذر فتح نافذة اختيار حسابات Google.',
       );
-    } catch (e) {
+    } catch (e, st) {
+      _log(
+        '[Stage 5/7] pickGoogleAccount unexpected exception | '
+        'type=${e.runtimeType}, error=$e\n$st',
+      );
       return YouTubeAccountSelectionResult(
         status: YouTubeAccountSelectionStatus.error,
         errorCode: 'unexpected_platform_error',
@@ -283,6 +313,14 @@ class MethodChannelYouTubeAuthPlatform extends YouTubeAuthPlatform {
     required List<String> scopes,
     bool forceCodeForRefreshToken = true,
   }) async {
+    _log(
+      '[Stage 3] Invoking MethodChannel authorizeYouTubeScopes | '
+      'hasAccountEmail=${accountEmail.trim().isNotEmpty}, '
+      'hasServerClientId=${serverClientId.trim().isNotEmpty}, '
+      'forceCodeForRefreshToken=$forceCodeForRefreshToken, '
+      'scopesCount=${scopes.length}, '
+      'scopes=${scopes.join(",")}',
+    );
     try {
       final result = await _channel.invokeMapMethod<dynamic, dynamic>(
         'authorizeYouTubeScopes',
@@ -294,14 +332,36 @@ class MethodChannelYouTubeAuthPlatform extends YouTubeAuthPlatform {
         },
       );
       if (result == null) {
+        _log(
+          '[Stage 7] authorizeYouTubeScopes received NULL map from MethodChannel',
+        );
         return const YouTubeAuthorizationResult(
           status: YouTubeAuthorizationStatus.error,
           errorCode: 'null_authorization_response',
           errorMessage: 'لم يتم استلام استجابة من خدمة تفويض صلاحيات YouTube.',
         );
       }
-      return YouTubeAuthorizationResult.fromMap(result);
-    } on PlatformException catch (e) {
+      final parsed = YouTubeAuthorizationResult.fromMap(result);
+      _log(
+        '[Stage 7] authorizeYouTubeScopes response parsed | '
+        'status=${parsed.status.name}, '
+        'isAuthorized=${parsed.isAuthorized}, '
+        'isCancelled=${parsed.isCancelled}, '
+        'isDenied=${parsed.isDenied}, '
+        'hasSelectedAccountEmail=${parsed.selectedAccountEmail != null && parsed.selectedAccountEmail!.isNotEmpty}, '
+        'hasAccessToken=${parsed.accessToken != null && parsed.accessToken!.isNotEmpty}, '
+        'hasServerAuthCode=${parsed.serverAuthCode != null && parsed.serverAuthCode!.isNotEmpty}, '
+        'grantedScopesCount=${parsed.grantedScopes.length}, '
+        'grantedScopes=${parsed.grantedScopes.join(",")}, '
+        'errorCode=${parsed.errorCode}, '
+        'errorMessage=${parsed.errorMessage}',
+      );
+      return parsed;
+    } on PlatformException catch (e, st) {
+      _log(
+        '[Stage 5/7] authorizeYouTubeScopes PlatformException | '
+        'code=${e.code}, message=${e.message}, details=${e.details}\n$st',
+      );
       if (e.code == 'cancelled' || e.code == 'USER_CANCELLED') {
         return YouTubeAuthorizationResult(
           status: YouTubeAuthorizationStatus.cancelled,
@@ -325,7 +385,11 @@ class MethodChannelYouTubeAuthPlatform extends YouTubeAuthPlatform {
         errorCode: e.code,
         errorMessage: e.message ?? 'فشل تفويض صلاحيات YouTube.',
       );
-    } catch (e) {
+    } catch (e, st) {
+      _log(
+        '[Stage 5/7] authorizeYouTubeScopes unexpected exception | '
+        'type=${e.runtimeType}, error=$e\n$st',
+      );
       return YouTubeAuthorizationResult(
         status: YouTubeAuthorizationStatus.error,
         selectedAccountEmail: accountEmail,
@@ -337,6 +401,10 @@ class MethodChannelYouTubeAuthPlatform extends YouTubeAuthPlatform {
 
   @override
   Future<void> clearSelectedAccountSession({String? accountEmail}) async {
+    _log(
+      '[Session] Invoking MethodChannel clearSelectedAccountSession | '
+      'hasAccountEmail=${accountEmail != null && accountEmail.isNotEmpty}',
+    );
     try {
       await _channel.invokeMethod<void>(
         'clearSelectedAccountSession',
@@ -344,10 +412,9 @@ class MethodChannelYouTubeAuthPlatform extends YouTubeAuthPlatform {
           if (accountEmail != null) 'accountEmail': accountEmail,
         },
       );
+      _log('[Session] clearSelectedAccountSession completed');
     } catch (e) {
-      if (kDebugMode) {
-        debugPrint('[YouTubeAuthPlatform] clearSelectedAccountSession error: $e');
-      }
+      _log('[Session] clearSelectedAccountSession error: $e');
     }
   }
 }

@@ -134,6 +134,7 @@ class _YouTubeConnectionScreenState extends State<YouTubeConnectionScreen> {
       _statusMessage = 'جاري فتح قائمة حسابات Google المتاحة على الجهاز...';
     });
 
+    debugPrint("[YouTubeOAuthDebug][Flutter-UI] Starting _startAccountSelectionFlow(switchAccount=" + switchAccount.toString() + ")");
     final session = await _authService.authenticateAndAuthorize(
       switchAccount: switchAccount,
       onStepChanged: (step) {
@@ -154,6 +155,7 @@ class _YouTubeConnectionScreenState extends State<YouTubeConnectionScreen> {
 
     if (!mounted) return;
 
+    debugPrint("[YouTubeOAuthDebug][Flutter-UI] Received YouTubeAuthSession | outcome=" + session.outcome.name + ", isAuthorized=" + session.isAuthorized.toString() + ", isCancelled=" + session.isCancelled.toString() + ", errorCode=" + (session.errorCode ?? "null") + ", errorMessage=" + (session.errorMessage ?? "null"));
     if (session.isCancelled) {
       setState(() {
         _stage = _YouTubeUiStage.readyToPickAccount;
