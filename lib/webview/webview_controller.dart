@@ -11,7 +11,9 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 import '../firebase/notification_service.dart';
 import '../services/device_info_service.dart';
 import '../services/notification_state_service.dart';
+import '../screens/youtube/youtube_connection_screen.dart';
 import '../services/social_bridge_service.dart';
+import '../services/youtube/youtube_token_service.dart';
 import '../utils/constants.dart';
 
 /// iOS Mobile Safari User-Agent (without "Android" or "wv").
@@ -113,6 +115,14 @@ class AppWebViewController with WidgetsBindingObserver {
           });
         },
       )
+      ..addJavaScriptChannel(
+        'PastelYouTubeChannel',
+        onMessageReceived: (JavaScriptMessage message) {
+          YouTubeTokenService.instance.handleWebViewChannelMessage(
+            message.message,
+          );
+        },
+      )
       ..setNavigationDelegate(
         NavigationDelegate(
           onProgress: (progress) => onProgressChanged?.call(progress),
@@ -143,6 +153,7 @@ class AppWebViewController with WidgetsBindingObserver {
     }
 
     SocialBridgeService.instance.attachController(controller);
+    YouTubeConnectionCoordinator.instance.attachWebViewController(controller);
     NotificationService.instance.tokenNotifier.addListener(_onFcmTokenChanged);
     NotificationStateService.instance.attachWebViewController(controller);
     WidgetsBinding.instance.addObserver(this);
@@ -298,6 +309,12 @@ class AppWebViewController with WidgetsBindingObserver {
     if (isFacebookOAuth || isPastelMetaConnect) {
       // Trigger Native Facebook Login flow directly
       SocialBridgeService.instance.startDirectFacebookLogin(provider: 'facebook');
+      return NavigationDecision.prevent;
+    }
+
+    // Intercept YouTube Connect navigation in an isolated flow (never inside embedded WebView)
+    if (YouTubeConnectionCoordinator.isYouTubeConnectNavigation(uri)) {
+      YouTubeConnectionCoordinator.instance.launchYouTubeConnectionFlow();
       return NavigationDecision.prevent;
     }
 
