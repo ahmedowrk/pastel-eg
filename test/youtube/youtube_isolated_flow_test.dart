@@ -188,6 +188,22 @@ void main() {
         equals(YouTubeAuthFlowOutcome.accountMismatchError),
       );
     });
+
+    test("15. Distinguishes technical ApiException (statusCode=8/10) from user cancellation", () async {
+      fakePlatform.onAuthorize = (email, scopes) async =>
+          YouTubeAuthorizationResult(
+            status: YouTubeAuthorizationStatus.error,
+            selectedAccountEmail: email,
+            errorCode: "api_exception_8_internal_error",
+            errorMessage: "فشل تفويض YouTube من خدمات Google (كود 8 - INTERNAL_ERROR).",
+          );
+
+      final session = await authService.authenticateAndAuthorize();
+      expect(session.isAuthorized, isFalse);
+      expect(session.isCancelled, isFalse);
+      expect(session.outcome, equals(YouTubeAuthFlowOutcome.error));
+      expect(session.errorCode, equals("api_exception_8_internal_error"));
+    });
   });
 
   group('YouTube Data API v3 Channel Verification', () {

@@ -157,6 +157,7 @@ class YouTubeChannelService {
       );
     }
 
+    debugPrint("[YouTubeOAuthDebug][Flutter-ChannelService] [Stage 8] fetchOwnedChannels START | hasAccessToken=" + trimmedToken.isNotEmpty.toString() + ", tokenLength=" + trimmedToken.length.toString());
     final client = _httpClient ?? http.Client();
     final shouldCloseClient = _httpClient == null;
 
@@ -171,6 +172,7 @@ class YouTubeChannelService {
           )
           .timeout(timeout);
 
+      debugPrint("[YouTubeOAuthDebug][Flutter-ChannelService] [Stage 8] YouTube Data API v3 response | httpStatus=" + response.statusCode.toString());
       if (response.statusCode == 200) {
         final dynamic decoded = jsonDecode(response.body);
         if (decoded is! Map<String, dynamic>) {
@@ -195,6 +197,7 @@ class YouTubeChannelService {
           }
         }
 
+        debugPrint("[YouTubeOAuthDebug][Flutter-ChannelService] [Stage 8] Parsed channels count=" + parsedChannels.length.toString() + ", channelIds=" + parsedChannels.map((c) => c.id).join(","));
         if (parsedChannels.isEmpty) {
           return YouTubeChannelResolutionResult(
             status: YouTubeChannelResolutionStatus.noChannelFound,

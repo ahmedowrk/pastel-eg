@@ -192,6 +192,7 @@ class YouTubeTokenService {
         'channel_thumbnail': channel.thumbnailUrl,
     };
 
+    debugPrint("[YouTubeOAuthDebug][Flutter-TokenService] [Stage 9] syncChannelConnection START | channelId=" + channel.id + ", hasAccessToken=" + accessToken.isNotEmpty.toString() + ", hasServerAuthCode=" + (validSession.serverAuthCode != null && validSession.serverAuthCode!.isNotEmpty).toString() + ", viaWebView=" + (webViewController != null).toString() + ", endpoint=" + kMobileYouTubeConnectTokenPath);
     if (webViewController != null) {
       return _syncViaWebView(
         webViewController: webViewController,
@@ -443,6 +444,7 @@ class YouTubeTokenService {
         (responseMap['message'] as String? ?? '').trim();
     final String? errorCode = responseMap['errorCode'] as String?;
 
+    debugPrint("[YouTubeOAuthDebug][Flutter-TokenService] [Stage 9] Backend sync response | httpStatus=" + httpStatus.toString() + ", isConnected=" + isConnected.toString() + ", errorCode=" + (errorCode ?? "null") + ", message=" + rawMessage);
     if (isConnected) {
       return YouTubeBackendSyncResult(
         status: YouTubeBackendSyncStatus.connected,

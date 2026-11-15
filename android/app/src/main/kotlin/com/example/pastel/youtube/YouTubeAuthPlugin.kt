@@ -395,19 +395,29 @@ class YouTubeAuthPlugin(
                 }
                 .addOnFailureListener { e ->
                     logExceptionDetails("Stage 4 - AuthorizationClient.authorize.addOnFailureListener", e)
-                    val statusCode = (e as? ApiException)?.statusCode
-                    val isCancelled = statusCode == CommonStatusCodes.CANCELED
-                    sendResultToFlutter(
-                        stage = "Stage 6 - authorizeYouTubeScopes (authorize_onFailure)",
-                        result = result,
-                        payload = mapOf(
-                            "status" to if (isCancelled) "cancelled" else "error",
-                            "selectedAccountEmail" to accountEmail,
-                            "errorCode" to (statusCode?.toString() ?: "authorize_failed"),
-                            "errorMessage" to (e.localizedMessage
-                                ?: "تعذر تفويض صلاحيات YouTube عبر Google Play Services.")
+                    if (e is ApiException) {
+                        val payload = buildApiExceptionPayload(
+                            accountEmail = accountEmail,
+                            apiException = e
                         )
-                    )
+                        sendResultToFlutter(
+                            stage = "Stage 6 - authorizeYouTubeScopes (authorize_onFailure_api_exception_${e.statusCode})",
+                            result = result,
+                            payload = payload
+                        )
+                    } else {
+                        sendResultToFlutter(
+                            stage = "Stage 6 - authorizeYouTubeScopes (authorize_onFailure)",
+                            result = result,
+                            payload = mapOf(
+                                "status" to "error",
+                                "selectedAccountEmail" to accountEmail,
+                                "errorCode" to "authorize_failed",
+                                "errorMessage" to (e.localizedMessage
+                                    ?: "تعذر تفويض صلاحيات YouTube عبر Google Play Services.")
+                            )
+                        )
+                    }
                 }
         } catch (e: Exception) {
             logExceptionDetails("Stage 3 - handleAuthorizeYouTubeScopes (outer catch)", e)
@@ -524,44 +534,26 @@ class YouTubeAuthPlugin(
                 return true
             }
 
-            if (data == null || resultCode != Activity.RESULT_OK) {
+            if (data == null) {
+                val isUserCancel = resultCode == Activity.RESULT_CANCELED
                 Log.w(
                     TAG,
-                    "[Stage 4] Resolution returned non-OK or null intent | " +
+                    "[Stage 4] Resolution returned null Intent | " +
                         "resultCode=$resultCode (${resultCodeToString(resultCode)}), " +
-                        "hasData=${data != null}"
+                        "isUserCancel=$isUserCancel"
                 )
-                // Diagnostic-only inspection: if Play Services returned an Intent with
-                // RESULT_CANCELED, calling getAuthorizationResultFromIntent(data) extracts
-                // the underlying ApiException (e.g., DEVELOPER_ERROR 10, CANCELED 16, etc.)
-                // so we can log the exact root cause without altering control flow.
-                if (data != null) {
-                    try {
-                        val diagnosticAuthResult = Identity.getAuthorizationClient(activity)
-                            .getAuthorizationResultFromIntent(data)
-                        Log.d(
-                            TAG,
-                            "[Stage 4 - Diagnostic] getAuthorizationResultFromIntent on non-OK result succeeded unexpectedly | " +
-                                "hasAccessToken=${!diagnosticAuthResult.accessToken.isNullOrEmpty()}, " +
-                                "hasServerAuthCode=${!diagnosticAuthResult.serverAuthCode.isNullOrEmpty()}, " +
-                                "grantedScopes=${diagnosticAuthResult.grantedScopes.joinToString()}"
-                        )
-                    } catch (e: Exception) {
-                        logExceptionDetails(
-                            "Stage 5 - getAuthorizationResultFromIntent (on non-OK resultCode=$resultCode)",
-                            e
-                        )
-                    }
-                }
-
                 sendResultToFlutter(
-                    stage = "Stage 6 - authorizeYouTubeScopes (consent_cancelled_or_denied)",
+                    stage = "Stage 6 - authorizeYouTubeScopes (null_intent_result_$resultCode)",
                     result = callback,
                     payload = mapOf(
-                        "status" to "cancelled",
+                        "status" to if (isUserCancel) "cancelled" else "error",
                         "selectedAccountEmail" to accountEmail,
-                        "errorCode" to "consent_cancelled_or_denied",
-                        "errorMessage" to "تم إلغاء أو رفض الموافقة على صلاحيات YouTube."
+                        "errorCode" to if (isUserCancel) "user_cancelled" else "null_authorization_intent",
+                        "errorMessage" to if (isUserCancel) {
+                            "تم إلغاء الموافقة على صلاحيات YouTube."
+                        } else {
+                            "لم يتم استلام نتيجة التفويض من خدمات Google Play (كود النتيجة: $resultCode)."
+                        }
                     )
                 )
                 return true
@@ -572,7 +564,7 @@ class YouTubeAuthPlugin(
                     .getAuthorizationResultFromIntent(data)
                 Log.d(
                     TAG,
-                    "[Stage 4] getAuthorizationResultFromIntent SUCCESS | " +
+                    "[Stage 4] getAuthorizationResultFromIntent SUCCESS (resultCode=$resultCode) | " +
                         "hasAccessToken=${!authResult.accessToken.isNullOrEmpty()}, " +
                         "hasServerAuthCode=${!authResult.serverAuthCode.isNullOrEmpty()}, " +
                         "grantedScopesCount=${authResult.grantedScopes.size}, " +
@@ -584,21 +576,24 @@ class YouTubeAuthPlugin(
                     authResult = authResult
                 )
             } catch (e: ApiException) {
-                logExceptionDetails("Stage 5 - getAuthorizationResultFromIntent (ApiException)", e)
-                val isCancelled = e.statusCode == CommonStatusCodes.CANCELED
+                logExceptionDetails(
+                    "Stage 5 - getAuthorizationResultFromIntent (ApiException, resultCode=$resultCode)",
+                    e
+                )
+                val payload = buildApiExceptionPayload(
+                    accountEmail = accountEmail,
+                    apiException = e
+                )
                 sendResultToFlutter(
                     stage = "Stage 6 - authorizeYouTubeScopes (api_exception_${e.statusCode})",
                     result = callback,
-                    payload = mapOf(
-                        "status" to if (isCancelled) "cancelled" else "denied",
-                        "selectedAccountEmail" to accountEmail,
-                        "errorCode" to "api_exception_${e.statusCode}",
-                        "errorMessage" to (e.localizedMessage
-                            ?: "تم رفض منح صلاحيات الوصول إلى قناة YouTube.")
-                    )
+                    payload = payload
                 )
             } catch (e: Exception) {
-                logExceptionDetails("Stage 5 - getAuthorizationResultFromIntent (Exception)", e)
+                logExceptionDetails(
+                    "Stage 5 - getAuthorizationResultFromIntent (Exception, resultCode=$resultCode)",
+                    e
+                )
                 sendResultToFlutter(
                     stage = "Stage 6 - authorizeYouTubeScopes (authorization_result_error)",
                     result = callback,
@@ -615,6 +610,77 @@ class YouTubeAuthPlugin(
         }
 
         return false
+    }
+
+    private fun buildApiExceptionPayload(
+        accountEmail: String,
+        apiException: ApiException
+    ): Map<String, Any?> {
+        val statusCode = apiException.statusCode
+        val statusName = CommonStatusCodes.getStatusCodeString(statusCode)
+        val rawDetail = (apiException.status.statusMessage ?: apiException.message ?: "").trim()
+
+        val hasConfigErrorMarker = rawDetail.contains("UNREGISTERED_ON_API_CONSOLE", ignoreCase = true) ||
+            rawDetail.contains("Developer console is not set up correctly", ignoreCase = true) ||
+            rawDetail.contains("DEVELOPER_ERROR", ignoreCase = true) ||
+            rawDetail.contains("INTERNAL_ERROR", ignoreCase = true)
+
+        val isAccessDenied = rawDetail.contains("access_denied", ignoreCase = true) ||
+            rawDetail.contains("PERMISSION_DENIED", ignoreCase = true)
+
+        val isGenuineUserCancellation =
+            statusCode == CommonStatusCodes.CANCELED && !hasConfigErrorMarker && !isAccessDenied
+
+        val status: String
+        val errorCode: String
+        val arabicMessage: String
+
+        when {
+            isGenuineUserCancellation -> {
+                status = "cancelled"
+                errorCode = "user_cancelled_16"
+                arabicMessage = "تم إلغاء الموافقة على صلاحيات YouTube من قِبل المستخدم."
+            }
+            isAccessDenied -> {
+                status = "denied"
+                errorCode = "access_denied_$statusCode"
+                arabicMessage = "تم رفض منح صلاحيات الوصول إلى قناة YouTube."
+            }
+            statusCode == CommonStatusCodes.DEVELOPER_ERROR ||
+                rawDetail.contains("UNREGISTERED_ON_API_CONSOLE", ignoreCase = true) ||
+                rawDetail.contains("Developer console is not set up correctly", ignoreCase = true) -> {
+                status = "error"
+                errorCode = "oauth_config_unregistered_$statusCode"
+                arabicMessage =
+                    "فشل تفويض YouTube بسبب إعدادات Google Cloud OAuth (كود $statusCode - $statusName: التطبيق أو بصمة SHA-1 غير مسجلة مع نفس مشروع Web Client ID)."
+            }
+            statusCode == CommonStatusCodes.INTERNAL_ERROR -> {
+                status = "error"
+                errorCode = "api_exception_8_internal_error"
+                arabicMessage =
+                    "فشل تفويض YouTube من خدمات Google (كود 8 - INTERNAL_ERROR). تأكد من تسجيل بصمة SHA-1 في نفس مشروع Web Client ID وإضافة الحساب ضمن Test Users."
+            }
+            statusCode == CommonStatusCodes.NETWORK_ERROR ||
+                statusCode == CommonStatusCodes.TIMEOUT -> {
+                status = "error"
+                errorCode = "api_exception_${statusCode}_network"
+                arabicMessage =
+                    "تعذر الاتصال بخدمات Google لتفويض YouTube (كود $statusCode - $statusName). يرجى التحقق من اتصال الإنترنت."
+            }
+            else -> {
+                status = "error"
+                errorCode = "api_exception_$statusCode"
+                arabicMessage =
+                    "تعذر إتمام تفويض صلاحيات YouTube عبر Google Play Services (كود $statusCode - $statusName)."
+            }
+        }
+
+        return mapOf(
+            "status" to status,
+            "selectedAccountEmail" to accountEmail,
+            "errorCode" to errorCode,
+            "errorMessage" to arabicMessage
+        )
     }
 
     private fun completeWithAuthorizationResult(
@@ -661,16 +727,13 @@ class YouTubeAuthPlugin(
                 "selectedAccountEmail" to accountEmail,
                 "accessToken" to accessToken,
                 "serverAuthCode" to serverAuthCode,
+                "isOfflineAccessGranted" to !serverAuthCode.isNullOrEmpty(),
                 "grantedScopes" to grantedScopes,
                 "expiresAtEpochMs" to (System.currentTimeMillis() + 55L * 60L * 1000L)
             )
         )
     }
 
-    /**
-     * Logs sanitized payload details (never logging emails, tokens, or auth codes)
-     * before returning the map over MethodChannel to Flutter.
-     */
     private fun sendResultToFlutter(
         stage: String,
         result: MethodChannel.Result,
@@ -686,6 +749,7 @@ class YouTubeAuthPlugin(
             "hasIdToken" to !(payload["idToken"] as? String).isNullOrEmpty(),
             "hasAccessToken" to !(payload["accessToken"] as? String).isNullOrEmpty(),
             "hasServerAuthCode" to !(payload["serverAuthCode"] as? String).isNullOrEmpty(),
+            "isOfflineAccessGranted" to payload["isOfflineAccessGranted"],
             "grantedScopes" to payload["grantedScopes"],
             "expiresAtEpochMs" to payload["expiresAtEpochMs"]
         )
@@ -693,10 +757,6 @@ class YouTubeAuthPlugin(
         result.success(payload)
     }
 
-    /**
-     * Logs comprehensive exception diagnostics (class, status code, API error code,
-     * message, and full stack trace) without exposing any PII or tokens.
-     */
     private fun logExceptionDetails(stage: String, e: Throwable) {
         val apiException = e as? ApiException
         val statusCode = apiException?.statusCode
@@ -723,16 +783,11 @@ class YouTubeAuthPlugin(
         )
     }
 
-    /**
-     * Logs non-sensitive metadata about extras inside an ActivityResult Intent
-     * (keys and value types/status codes, never logging token or email values).
-     */
     private fun inspectIntentExtrasDiagnostic(stage: String, data: Intent?) {
         val extras = data?.extras ?: return
         val keysSummary = extras.keySet().map { key ->
             val rawVal = extras.get(key)
             val valType = rawVal?.javaClass?.name ?: "null"
-            // Safe to log Google Play Services Status objects (contains statusCode & statusMessage)
             val safeValueSummary = if (key.contains("status", ignoreCase = true) ||
                 key.contains("error", ignoreCase = true)
             ) {

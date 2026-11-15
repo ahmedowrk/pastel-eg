@@ -23,6 +23,11 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        // Always invoke super.onActivityResult so FlutterActivity's internal lifecycle
+        // and registered plugins (e.g. flutter_facebook_auth, image_picker) receive
+        // their activity results normally.
+        super.onActivityResult(requestCode, resultCode, data)
+
         Log.d(
             TAG,
             "[MainActivity] onActivityResult received | " +
@@ -35,9 +40,6 @@ class MainActivity : FlutterActivity() {
             "[MainActivity] onActivityResult routing | " +
                 "requestCode=$requestCode, handledByYouTube=$handledByYouTube"
         )
-        if (!handledByYouTube) {
-            super.onActivityResult(requestCode, resultCode, data)
-        }
     }
 
     override fun onDestroy() {
