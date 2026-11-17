@@ -11,7 +11,7 @@ on:
 jobs:
   build-ios:
     name: Build iOS Release (Unsigned IPA) on macOS
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
