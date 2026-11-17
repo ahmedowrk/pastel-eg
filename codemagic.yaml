@@ -4,10 +4,22 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 30
     environment:
-      flutter: 3.38.5
+      flutter: stable
       xcode: latest
       cocoapods: default
     scripts:
+      - name: Sync YouTube iOS Client ID & Reversed URL Scheme (if provided)
+        script: |
+          if [ -n "${YOUTUBE_IOS_CLIENT_ID:-}" ]; then
+            /usr/libexec/PlistBuddy -c "Set :YouTubeIOSClientID $YOUTUBE_IOS_CLIENT_ID" ios/Runner/Info.plist
+          fi
+          CLIENT_ID=$(/usr/libexec/PlistBuddy -c "Print :YouTubeIOSClientID" ios/Runner/Info.plist 2>/dev/null || true)
+          if [ -n "$CLIENT_ID" ] && [[ "$CLIENT_ID" == *.apps.googleusercontent.com ]]; then
+            PREFIX="${CLIENT_ID%.apps.googleusercontent.com}"
+            REVERSED="com.googleusercontent.apps.${PREFIX}"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:1:CFBundleURLSchemes:0 $REVERSED" ios/Runner/Info.plist
+            echo "Configured Reversed Client ID: $REVERSED"
+          fi
       - name: Get Flutter packages
         script: flutter pub get
       - name: Flutter Analyze

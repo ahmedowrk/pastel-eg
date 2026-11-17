@@ -55,13 +55,28 @@
 		<string>remote-notification</string>
 	</array>
 
-	<!-- URL Schemes for Facebook Login Callback -->
+	<!-- URL Schemes: Separate entries for Meta (Facebook) and Google iOS OAuth -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>facebook-login</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>fb2184428119002213</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>google-oauth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<!-- Replace with Reversed Client ID: com.googleusercontent.apps.706271758182-xxxx -->
+				<string>com.googleusercontent.apps.YOUR_IOS_CLIENT_ID_PREFIX</string>
 			</array>
 		</dict>
 	</array>

@@ -16,17 +16,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Flutter (3.38.5)
+      - name: Setup Flutter (stable)
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.38.5'
           channel: 'stable'
           cache: true
 
-      - name: Inject YouTubeIOSClientID into Info.plist (if provided)
-        if: ${{ github.event.inputs.youtube_ios_client_id != '' }}
+      - name: Sync YouTubeIOSClientID & Reversed URL Scheme into Info.plist
         run: |
-          /usr/libexec/PlistBuddy -c "Set :YouTubeIOSClientID ${{ github.event.inputs.youtube_ios_client_id }}" ios/Runner/Info.plist
+          if [ -n "${{ github.event.inputs.youtube_ios_client_id }}" ]; then
+            /usr/libexec/PlistBuddy -c "Set :YouTubeIOSClientID ${{ github.event.inputs.youtube_ios_client_id }}" ios/Runner/Info.plist
+          fi
+          CLIENT_ID=$(/usr/libexec/PlistBuddy -c "Print :YouTubeIOSClientID" ios/Runner/Info.plist 2>/dev/null || true)
+          if [ -n "$CLIENT_ID" ] && [[ "$CLIENT_ID" == *.apps.googleusercontent.com ]]; then
+            PREFIX="${CLIENT_ID%.apps.googleusercontent.com}"
+            REVERSED="com.googleusercontent.apps.${PREFIX}"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:1:CFBundleURLSchemes:0 $REVERSED" ios/Runner/Info.plist
+            echo "Configured Reversed Client ID: $REVERSED"
+          fi
 
       - name: Install Flutter dependencies
         run: flutter pub get
