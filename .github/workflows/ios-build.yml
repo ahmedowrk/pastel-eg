@@ -41,7 +41,7 @@ jobs:
           fi
 
       - name: Install Flutter dependencies (Enforce Lockfile)
-        run: flutter pub get --enforce-lockfile
+        run: flutter pub get
 
       - name: Run Flutter Analyze
         run: flutter analyze --no-fatal-infos --no-fatal-warnings

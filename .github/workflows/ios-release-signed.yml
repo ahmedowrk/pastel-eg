@@ -105,7 +105,7 @@ jobs:
           PLIST
 
       - name: Install Flutter dependencies (Enforce Lockfile)
-        run: flutter pub get --enforce-lockfile
+        run: flutter pub get
 
       - name: Install CocoaPods dependencies
         working-directory: ios
