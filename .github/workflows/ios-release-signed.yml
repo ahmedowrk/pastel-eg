@@ -1,0 +1,144 @@
+name: iOS Signed Release IPA & TestFlight (macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_to_testflight:
+        description: 'Upload signed IPA to TestFlight after Archive & Export?'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  build-signed-ipa:
+    name: Archive & Export Signed iOS IPA (com.pasteleg.app)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Verify YouTubeIOSClientID & Reversed URL Scheme in Info.plist
+        run: |
+          CLIENT_ID=$(/usr/libexec/PlistBuddy -c "Print :YouTubeIOSClientID" ios/Runner/Info.plist 2>/dev/null || true)
+          if [ -z "$CLIENT_ID" ] || [[ "$CLIENT_ID" != *.apps.googleusercontent.com ]]; then
+            echo "ERROR: Missing valid YouTubeIOSClientID in ios/Runner/Info.plist"
+            exit 1
+          fi
+          echo "Verified YouTubeIOSClientID: $CLIENT_ID"
+
+      - name: Validate Required Signing Secrets
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.IOS_DIST_CERT_BASE64 }}
+          P12_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.IOS_PROV_PROFILE_BASE64 }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$BUILD_CERTIFICATE_BASE64" ] || [ -z "$P12_PASSWORD" ] || [ -z "$BUILD_PROVISION_PROFILE_BASE64" ] || [ -z "$TEAM_ID" ]; then
+            echo "ERROR: Missing required GitHub Actions Secrets for iOS Signing:"
+            echo "  - IOS_DIST_CERT_BASE64 (Base64-encoded Apple Distribution .p12)"
+            echo "  - IOS_DIST_CERT_PASSWORD (Password for the .p12 file)"
+            echo "  - IOS_PROV_PROFILE_BASE64 (Base64-encoded App Store .mobileprovision for com.pasteleg.app)"
+            echo "  - APPLE_TEAM_ID (10-character Apple Developer Team ID)"
+            exit 1
+          fi
+
+      - name: Install Apple Distribution Certificate & Provisioning Profile
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.IOS_DIST_CERT_BASE64 }}
+          P12_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.IOS_PROV_PROFILE_BASE64 }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(uuidgen)
+
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERTIFICATE_PATH"
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o "$PP_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$CERTIFICATE_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+          UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" /dev/stdin <<< $(/usr/bin/security cms -D -i "$PP_PATH"))
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" /dev/stdin <<< $(/usr/bin/security cms -D -i "$PP_PATH"))
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PP_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+
+          echo "Installed Provisioning Profile: $PROFILE_NAME (UUID: $UUID)"
+
+          cat <<PLIST > "$RUNNER_TEMP/ExportOptions.plist"
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>teamID</key>
+              <string>$TEAM_ID</string>
+              <key>uploadBitcode</key>
+              <false/>
+              <key>uploadSymbols</key>
+              <true/>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>signingCertificate</key>
+              <string>Apple Distribution</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>com.pasteleg.app</key>
+                  <string>$UUID</string>
+              </dict>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Install Flutter dependencies (Enforce Lockfile)
+        run: flutter pub get --enforce-lockfile
+
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        run: pod install
+
+      - name: Archive & Export Signed IPA (flutter build ipa)
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          flutter build ipa --release --export-options-plist="$RUNNER_TEMP/ExportOptions.plist"
+
+      - name: Upload Signed IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pastel-iOS-Signed-Release-IPA
+          path: build/ios/ipa/*.ipa
+          retention-days: 14
+
+      - name: Upload to TestFlight (Optional - only when upload_to_testflight == true)
+        if: ${{ github.event.inputs.upload_to_testflight == 'true' }}
+        env:
+          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+        run: |
+          if [ -z "$API_KEY_ID" ] || [ -z "$API_ISSUER_ID" ] || [ -z "$API_PRIVATE_KEY" ]; then
+            echo "ERROR: Missing App Store Connect API Key secrets (APP_STORE_CONNECT_KEY_ID, APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_API_KEY_P8)"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          echo "$API_PRIVATE_KEY" > "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8"
+          IPA_FILE=$(ls build/ios/ipa/*.ipa | head -n 1)
+          xcrun altool --upload-app --type ios -f "$IPA_FILE" \
+            --apiKey "$API_KEY_ID" \
+            --apiIssuer "$API_ISSUER_ID" \
+            --verbose

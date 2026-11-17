@@ -25,8 +25,8 @@ workflows:
             echo "ERROR: Missing valid YouTubeIOSClientID in ios/Runner/Info.plist"
             exit 1
           fi
-      - name: Get Flutter packages
-        script: flutter pub get
+      - name: Get Flutter packages (Enforce Lockfile)
+        script: flutter pub get --enforce-lockfile
       - name: Flutter Analyze
         script: flutter analyze --no-fatal-infos --no-fatal-warnings
       - name: Install CocoaPods dependencies
@@ -43,3 +43,31 @@ workflows:
           zip -r -9 Pastel-iOS-Unsigned.ipa Payload
     artifacts:
       - build/ios/ipa_unsigned/Pastel-iOS-Unsigned.ipa
+
+  ios-release-signed:
+    name: Pastel iOS Signed Release IPA (App Store / TestFlight Ready)
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.pasteleg.app
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Set up code signing settings on Xcode project
+        script: xcode-project use-profiles
+      - name: Get Flutter packages (Enforce Lockfile)
+        script: flutter pub get --enforce-lockfile
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios
+          pod install
+      - name: Flutter Build Signed IPA
+        script: |
+          flutter build ipa --release \
+            --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
