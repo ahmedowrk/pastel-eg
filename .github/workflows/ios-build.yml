@@ -1,14 +1,6 @@
 name: iOS Build & Readiness Verification (macOS)
 
 on:
-  push:
-    branches:
-      - feature/youtube-account-picker-isolated
-    paths:
-      - 'ios/**'
-      - 'lib/**'
-      - 'pubspec.*'
-      - '.github/workflows/ios-build.yml'
   workflow_dispatch:
     inputs:
       youtube_ios_client_id:
@@ -32,7 +24,7 @@ jobs:
           cache: true
 
       - name: Inject YouTubeIOSClientID into Info.plist (if provided)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.youtube_ios_client_id != '' }}
+        if: ${{ github.event.inputs.youtube_ios_client_id != '' }}
         run: |
           /usr/libexec/PlistBuddy -c "Set :YouTubeIOSClientID ${{ github.event.inputs.youtube_ios_client_id }}" ios/Runner/Info.plist
 

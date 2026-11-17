@@ -1,0 +1,28 @@
+workflows:
+  ios-unsigned-check:
+    name: Pastel iOS Readiness & Unsigned IPA Build
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      flutter: 3.38.5
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Get Flutter packages
+        script: flutter pub get
+      - name: Flutter Analyze
+        script: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios
+          pod install
+      - name: Build iOS Release (No Codesign)
+        script: flutter build ios --release --no-codesign
+      - name: Package Unsigned IPA
+        script: |
+          mkdir -p build/ios/ipa_unsigned/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/ipa_unsigned/Payload/
+          cd build/ios/ipa_unsigned
+          zip -r -9 Pastel-iOS-Unsigned.ipa Payload
+    artifacts:
+      - build/ios/ipa_unsigned/Pastel-iOS-Unsigned.ipa
