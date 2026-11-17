@@ -75,8 +75,7 @@
 			<string>google-oauth</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<!-- Replace with Reversed Client ID: com.googleusercontent.apps.706271758182-xxxx -->
-				<string>com.googleusercontent.apps.YOUR_IOS_CLIENT_ID_PREFIX</string>
+				<string>com.googleusercontent.apps.706271758182-c3a8eg9vr8a52m49gn8nfmslamn3v9s0</string>
 			</array>
 		</dict>
 	</array>
@@ -91,7 +90,7 @@
 
 	<!-- Google Cloud iOS OAuth 2.0 Client ID for Bundle ID com.pasteleg.app -->
 	<key>YouTubeIOSClientID</key>
-	<string></string>
+	<string>706271758182-c3a8eg9vr8a52m49gn8nfmslamn3v9s0.apps.googleusercontent.com</string>
 
 	<!-- Allow Facebook & External App Queries -->
 	<key>LSApplicationQueriesSchemes</key>
