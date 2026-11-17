@@ -4,12 +4,25 @@ import Flutter
 import Foundation
 import UIKit
 
-final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextProviding {
+final class YouTubeAuthPlugin: NSObject, FlutterPlugin, ASWebAuthenticationPresentationContextProviding {
   private static let channelName = "com.pasteleg.app/youtube_auth"
+  private static let logTag = "[YouTubeOAuthDebug][iOS]"
 
   private var channel: FlutterMethodChannel?
   private var currentAuthSession: ASWebAuthenticationSession?
   private var lastSelectedEmail: String?
+  private var cachedRefreshTokensByEmail: [String: String] = [:]
+
+  static func register(with registrar: FlutterPluginRegistrar) {
+    let instance = YouTubeAuthPlugin()
+    let methodChannel = FlutterMethodChannel(
+      name: channelName,
+      binaryMessenger: registrar.messenger()
+    )
+    instance.channel = methodChannel
+    registrar.addMethodCallDelegate(instance, channel: methodChannel)
+    NSLog("\(logTag) Plugin registered with FlutterPluginRegistrar on channel \(channelName)")
+  }
 
   static func register(with controller: FlutterViewController) {
     let instance = YouTubeAuthPlugin()
@@ -19,7 +32,7 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
     )
     instance.channel = methodChannel
     methodChannel.setMethodCallHandler { [weak instance] call, result in
-      instance?.handle(call: call, result: result)
+      instance?.handle(call, result: result)
     }
     objc_setAssociatedObject(
       controller,
@@ -29,33 +42,48 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
     )
   }
 
-  private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
+  func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "pickGoogleAccount":
       handlePickGoogleAccount(call: call, result: result)
     case "authorizeYouTubeScopes":
       handleAuthorizeYouTubeScopes(call: call, result: result)
     case "clearSelectedAccountSession":
+      let args = call.arguments as? [String: Any] ?? [:]
+      if let email = (args["accountEmail"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+         !email.isEmpty {
+        cachedRefreshTokensByEmail.removeValue(forKey: email)
+      } else {
+        cachedRefreshTokensByEmail.removeAll()
+      }
       lastSelectedEmail = nil
       currentAuthSession?.cancel()
       currentAuthSession = nil
+      NSLog("\(Self.logTag) Cleared selected Google account session.")
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
   }
 
-  private func resolveIOSClientId(fallbackServerClientId: String) -> (clientId: String, callbackScheme: String)? {
+  /// Resolves the iOS OAuth 2.0 Client ID from Info.plist (`YouTubeIOSClientID`).
+  /// Note: Google OAuth 2.0 requires an iOS client type (not a Web client type)
+  /// when redirecting to a custom URL scheme (`com.googleusercontent.apps.<PREFIX>:/oauthredirect`).
+  private func resolveIOSClientId() -> (clientId: String, callbackScheme: String)? {
     let info = Bundle.main.infoDictionary
     let configuredIOSClientId = (info?["YouTubeIOSClientID"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let activeClientId = configuredIOSClientId.isEmpty ? fallbackServerClientId : configuredIOSClientId
-    guard !activeClientId.isEmpty else { return nil }
 
-    if let prefix = activeClientId.components(separatedBy: ".apps.googleusercontent.com").first,
+    guard !configuredIOSClientId.isEmpty,
+          !configuredIOSClientId.hasPrefix("YOUR_"),
+          configuredIOSClientId.hasSuffix(".apps.googleusercontent.com") else {
+      return nil
+    }
+
+    if let prefix = configuredIOSClientId.components(separatedBy: ".apps.googleusercontent.com").first,
        !prefix.isEmpty {
       return (
-        clientId: activeClientId,
+        clientId: configuredIOSClientId,
         callbackScheme: "com.googleusercontent.apps.\(prefix)"
       )
     }
@@ -63,15 +91,13 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
   }
 
   private func handlePickGoogleAccount(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    let args = call.arguments as? [String: Any] ?? [:]
-    let serverClientId = (args["serverClientId"] as? String)?
-      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-    guard let oauthConfig = resolveIOSClientId(fallbackServerClientId: serverClientId) else {
+    NSLog("\(Self.logTag) [Stage 1]Starting Google Account Picker (ASWebAuthenticationSession)")
+    guard let oauthConfig = resolveIOSClientId() else {
+      NSLog("\(Self.logTag) [Stage 1] Missing or invalid YouTubeIOSClientID in Info.plist")
       result([
         "status": "error",
         "errorCode": "missing_ios_client_id",
-        "errorMessage": "لم يتم ضبط معرف عميل Google OAuth الخاص بنظام iOS."
+        "errorMessage": "لم يتم ضبط معرف عميل Google OAuth الخاص بنظام iOS (YouTubeIOSClientID) في ملف Info.plist."
       ])
       return
     }
@@ -105,9 +131,11 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
       callbackURLScheme: oauthConfig.callbackScheme
     ) { [weak self] callbackURL, error in
       self?.currentAuthSession = nil
+
       if let nsError = error as NSError? {
         if nsError.domain == ASWebAuthenticationSessionErrorDomain,
            nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+          NSLog("\(Self.logTag) [Stage 2] Account picker cancelled by user.")
           result([
             "status": "cancelled",
             "errorCode": "user_cancelled",
@@ -115,6 +143,7 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
           ])
           return
         }
+        NSLog("\(Self.logTag) [Stage 2] Account picker error: domain=\(nsError.domain), code=\(nsError.code)")
         result([
           "status": "error",
           "errorCode": "aswebauth_error_\(nsError.code)",
@@ -135,6 +164,7 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
 
       if let oauthError = queryItems.first(where: { $0.name == "error" })?.value {
         let isCancelled = oauthError == "access_denied"
+        NSLog("\(Self.logTag) [Stage 2] Account picker OAuth error: \(oauthError)")
         result([
           "status": isCancelled ? "cancelled" : "error",
           "errorCode": oauthError,
@@ -171,9 +201,8 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
     let args = call.arguments as? [String: Any] ?? [:]
     let accountEmail = (args["accountEmail"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let serverClientId = (args["serverClientId"] as? String)?
-      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     let scopes = (args["scopes"] as? [String]) ?? []
+    let forceCodeForRefreshToken = (args["forceCodeForRefreshToken"] as? Bool) ?? true
 
     guard !accountEmail.isEmpty else {
       result([
@@ -184,15 +213,33 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
       return
     }
 
-    guard let oauthConfig = resolveIOSClientId(fallbackServerClientId: serverClientId) else {
+    guard let oauthConfig = resolveIOSClientId() else {
+      NSLog("\(Self.logTag) [Stage 3] Missing or invalid YouTubeIOSClientID in Info.plist")
       result([
         "status": "error",
         "selectedAccountEmail": accountEmail,
         "errorCode": "missing_ios_client_id",
-        "errorMessage": "لم يتم ضبط معرف عميل Google OAuth الخاص بنظام iOS."
+        "errorMessage": "لم يتم ضبط معرف عميل Google OAuth الخاص بنظام iOS (YouTubeIOSClientID) في ملف Info.plist."
       ])
       return
     }
+
+    let normalizedEmail = accountEmail.lowercased()
+    if !forceCodeForRefreshToken,
+       let cachedRefreshToken = cachedRefreshTokensByEmail[normalizedEmail],
+       !cachedRefreshToken.isEmpty {
+      NSLog("\(Self.logTag) [Stage 3] Performing silent access token refresh via cached refresh token")
+      refreshYouTubeAccessToken(
+        refreshToken: cachedRefreshToken,
+        accountEmail: accountEmail,
+        clientId: oauthConfig.clientId,
+        requestedScopes: scopes,
+        result: result
+      )
+      return
+    }
+
+    NSLog("\(Self.logTag) [Stage 3] Starting YouTube scope authorization | scopesCount=\(scopes.count), forceCodeForRefreshToken=\(forceCodeForRefreshToken)")
 
     let verifier = Self.generateCodeVerifier()
     let challenge = Self.generateCodeChallenge(from: verifier)
@@ -207,7 +254,7 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
       URLQueryItem(name: "scope", value: combinedScopes),
       URLQueryItem(name: "login_hint", value: accountEmail),
       URLQueryItem(name: "access_type", value: "offline"),
-      URLQueryItem(name: "prompt", value: "consent"),
+      URLQueryItem(name: "prompt", value: forceCodeForRefreshToken ? "consent" : "none"),
       URLQueryItem(name: "include_granted_scopes", value: "true"),
       URLQueryItem(name: "code_challenge", value: challenge),
       URLQueryItem(name: "code_challenge_method", value: "S256"),
@@ -228,9 +275,11 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
       callbackURLScheme: oauthConfig.callbackScheme
     ) { [weak self] callbackURL, error in
       self?.currentAuthSession = nil
+
       if let nsError = error as NSError? {
         if nsError.domain == ASWebAuthenticationSessionErrorDomain,
            nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+          NSLog("\(Self.logTag) [Stage 5] YouTube scope consent cancelled by user.")
           result([
             "status": "cancelled",
             "selectedAccountEmail": accountEmail,
@@ -239,6 +288,7 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
           ])
           return
         }
+        NSLog("\(Self.logTag) [Stage 5] YouTube scope consent error: domain=\(nsError.domain), code=\(nsError.code)")
         result([
           "status": "error",
           "selectedAccountEmail": accountEmail,
@@ -260,6 +310,7 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
       }
 
       if let oauthError = queryItems.first(where: { $0.name == "error" })?.value {
+        NSLog("\(Self.logTag) [Stage 5] YouTube OAuth callback returned error=\(oauthError)")
         result([
           "status": oauthError == "access_denied" ? "denied" : "error",
           "selectedAccountEmail": accountEmail,
@@ -322,6 +373,7 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
     URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
       DispatchQueue.main.async {
         if let error = error {
+          NSLog("\(Self.logTag) [Stage 2] Account token exchange network error: \(error.localizedDescription)")
           result([
             "status": "error",
             "errorCode": "token_exchange_network_error",
@@ -333,6 +385,7 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
         guard let data = data,
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let idToken = json["id_token"] as? String else {
+          NSLog("\(Self.logTag) [Stage 2] Account token exchange failed to return id_token")
           result([
             "status": "error",
             "errorCode": "token_exchange_failed",
@@ -356,6 +409,7 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
         }
 
         self?.lastSelectedEmail = email
+        NSLog("\(Self.logTag) [Stage 2] Account selected successfully (hasIdToken=true)")
         result([
           "status": "selected",
           "email": email,
@@ -393,9 +447,10 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
     bodyComponents.queryItems = bodyItems
     request.httpBody = bodyComponents.percentEncodedQuery?.data(using: .utf8)
 
-    URLSession.shared.dataTask(with: request) { data, _, error in
+    URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
       DispatchQueue.main.async {
         if let error = error {
+          NSLog("\(Self.logTag) [Stage 5] YouTube token exchange network error: \(error.localizedDescription)")
           result([
             "status": "error",
             "selectedAccountEmail": accountEmail,
@@ -409,6 +464,8 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let accessToken = json["access_token"] as? String,
               !accessToken.isEmpty else {
+          let apiError = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })?["error"] as? String ?? "unknown"
+          NSLog("\(Self.logTag) [Stage 5] YouTube token exchange failed: error=\(apiError)")
           result([
             "status": "error",
             "selectedAccountEmail": accountEmail,
@@ -418,6 +475,7 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
           return
         }
 
+        let refreshToken = (json["refresh_token"] as? String) ?? ""
         let scopeStr = (json["scope"] as? String) ?? ""
         let grantedScopes = scopeStr
           .components(separatedBy: " ")
@@ -434,11 +492,85 @@ final class YouTubeAuthPlugin: NSObject, ASWebAuthenticationPresentationContextP
           }
         }
 
+        if !refreshToken.isEmpty {
+          self?.cachedRefreshTokensByEmail[verifiedEmail.lowercased()] = refreshToken
+        }
+
+        let isOfflineAccessGranted = !refreshToken.isEmpty
+        NSLog("\(Self.logTag) [Stage 6] Returning authorized result to Flutter | hasAccessToken=true, hasRefreshToken=\(isOfflineAccessGranted), grantedScopesCount=\(grantedScopes.count)")
+
         result([
           "status": "authorized",
           "selectedAccountEmail": verifiedEmail,
           "accessToken": accessToken,
           "serverAuthCode": code,
+          "isOfflineAccessGranted": isOfflineAccessGranted,
+          "grantedScopes": grantedScopes.isEmpty ? requestedScopes : grantedScopes,
+          "expiresAtEpochMs": expiresAtEpochMs
+        ])
+      }
+    }.resume()
+  }
+
+  private func refreshYouTubeAccessToken(
+    refreshToken: String,
+    accountEmail: String,
+    clientId: String,
+    requestedScopes: [String],
+    result: @escaping FlutterResult
+  ) {
+    let tokenUrl = URL(string: "https://oauth2.googleapis.com/token")!
+    var request = URLRequest(url: tokenUrl)
+    request.httpMethod = "POST"
+    request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+
+    let bodyItems = [
+      URLQueryItem(name: "client_id", value: clientId),
+      URLQueryItem(name: "refresh_token", value: refreshToken),
+      URLQueryItem(name: "grant_type", value: "refresh_token"),
+    ]
+    var bodyComponents = URLComponents()
+    bodyComponents.queryItems = bodyItems
+    request.httpBody = bodyComponents.percentEncodedQuery?.data(using: .utf8)
+
+    URLSession.shared.dataTask(with: request) { data, _, error in
+      DispatchQueue.main.async {
+        if let error = error {
+          result([
+            "status": "error",
+            "selectedAccountEmail": accountEmail,
+            "errorCode": "refresh_token_network_error",
+            "errorMessage": error.localizedDescription
+          ])
+          return
+        }
+
+        guard let data = data,
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let accessToken = json["access_token"] as? String,
+              !accessToken.isEmpty else {
+          result([
+            "status": "error",
+            "selectedAccountEmail": accountEmail,
+            "errorCode": "refresh_token_failed",
+            "errorMessage": "انتهت صلاحية جلسة YouTube وتعذر تجديد رمز الوصول تلقائياً."
+          ])
+          return
+        }
+
+        let scopeStr = (json["scope"] as? String) ?? ""
+        let grantedScopes = scopeStr
+          .components(separatedBy: " ")
+          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+          .filter { !$0.isEmpty }
+        let expiresIn = (json["expires_in"] as? Int) ?? 3500
+        let expiresAtEpochMs = Int(Date().timeIntervalSince1970 * 1000) + (expiresIn * 1000)
+
+        result([
+          "status": "authorized",
+          "selectedAccountEmail": accountEmail,
+          "accessToken": accessToken,
+          "isOfflineAccessGranted": true,
           "grantedScopes": grantedScopes.isEmpty ? requestedScopes : grantedScopes,
           "expiresAtEpochMs": expiresAtEpochMs
         ])

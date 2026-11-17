@@ -1,0 +1,64 @@
+name: iOS Build & Readiness Verification (macOS)
+
+on:
+  push:
+    branches:
+      - feature/youtube-account-picker-isolated
+    paths:
+      - 'ios/**'
+      - 'lib/**'
+      - 'pubspec.*'
+      - '.github/workflows/ios-build.yml'
+  workflow_dispatch:
+    inputs:
+      youtube_ios_client_id:
+        description: 'Optional: Google Cloud iOS OAuth Client ID (xxx.apps.googleusercontent.com)'
+        required: false
+        default: ''
+
+jobs:
+  build-ios:
+    name: Build iOS Release (Unsigned IPA) on macOS
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter (3.38.5)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.5'
+          channel: 'stable'
+          cache: true
+
+      - name: Inject YouTubeIOSClientID into Info.plist (if provided)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.youtube_ios_client_id != '' }}
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :YouTubeIOSClientID ${{ github.event.inputs.youtube_ios_client_id }}" ios/Runner/Info.plist
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Run Flutter Analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        run: pod install
+
+      - name: Build iOS Release (No Codesign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package Unsigned IPA Artifact
+        run: |
+          mkdir -p build/ios/ipa_unsigned/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/ipa_unsigned/Payload/
+          cd build/ios/ipa_unsigned
+          zip -r -9 Pastel-iOS-Unsigned.ipa Payload
+
+      - name: Upload Unsigned IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pastel-iOS-Unsigned-IPA
+          path: build/ios/ipa_unsigned/Pastel-iOS-Unsigned.ipa
+          retention-days: 14
